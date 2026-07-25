@@ -485,26 +485,41 @@ class World:
       self.add_character(character)
 
   def get_party(self) -> 'list[Character]':
-    """Return the characters currently recruited into the player's party."""
-    return [character for character in self.characters.values() if character.recruited]
+    """Return the characters currently recruited into the player's party.
+
+    Uses getattr defensively: a World/Character decoded via jsonpickle from a
+    trace recorded before recruitment fields existed will not have `recruited`
+    in its __dict__ (jsonpickle restores __dict__ directly, without calling
+    __init__), so a bare `character.recruited` would raise AttributeError.
+    """
+    return [character for character in self.characters.values() if getattr(character, 'recruited', False)]
 
   def can_recruit(self, character_name: str, feeling_threshold: 'FeelingLevel') -> bool:
     """Check whether character_name can be recruited: their feeling already meets feeling_threshold,
-    or their recruitment challenge puzzle has been solved. These are independent conditions."""
+    or their recruitment challenge puzzle has been solved. These are independent conditions.
+
+    Uses getattr defensively so a legacy (pre-recruitment) jsonpickle-decoded Character,
+    which is missing these attributes entirely, is treated as non-recruitable rather than
+    raising AttributeError.
+    """
     character = self.characters.get(character_name)
-    if character is None or not character.recruitable or character.recruited:
+    if character is None or not getattr(character, 'recruitable', False) or getattr(character, 'recruited', False):
       return False
 
-    feeling_ok = FEELING_ORDER.index(character.feeling) >= FEELING_ORDER.index(feeling_threshold)
-    puzzle_ok = (character.recruitment_puzzle is not None and
-                 self.puzzle_states.get(character.recruitment_puzzle) == 'solved')
+    feeling_ok = FEELING_ORDER.index(getattr(character, 'feeling', FeelingLevel.NEUTRAL)) >= FEELING_ORDER.index(feeling_threshold)
+    recruitment_puzzle = getattr(character, 'recruitment_puzzle', None)
+    puzzle_ok = (recruitment_puzzle is not None and
+                 self.puzzle_states.get(recruitment_puzzle) == 'solved')
     return feeling_ok or puzzle_ok
 
   def recruit_character(self, character_name: str) -> bool:
     """Mark character_name as recruited and apply the social ripple to related NPCs. Returns False if
-    the character doesn't exist, isn't recruitable, or is already recruited."""
+    the character doesn't exist, isn't recruitable, or is already recruited.
+
+    Uses getattr defensively for the same legacy-decoded-object reason as can_recruit above.
+    """
     character = self.characters.get(character_name)
-    if character is None or not character.recruitable or character.recruited:
+    if character is None or not getattr(character, 'recruitable', False) or getattr(character, 'recruited', False):
       return False
 
     character.recruited = True
@@ -512,7 +527,9 @@ class World:
     return True
 
   def _apply_relationship_ripple(self, recruited_character_name: str) -> None:
-    for relationship in self.npc_relationships:
+    # getattr(self, 'npc_relationships', []): a World decoded via jsonpickle from a
+    # pre-recruitment trace has no npc_relationships attribute at all.
+    for relationship in getattr(self, 'npc_relationships', []):
       if relationship.character_a == recruited_character_name:
         other_name = relationship.character_b
       elif relationship.character_b == recruited_character_name:
@@ -525,7 +542,7 @@ class World:
         continue
 
       step = 1 if relationship.tag == RelationshipTag.ALLY else -1
-      other.feeling = shift_feeling(other.feeling, step)
+      other.feeling = shift_feeling(getattr(other, 'feeling', FeelingLevel.NEUTRAL), step)
 
   def render_world(self, *, language:str = 'en', detail_components:bool = True) -> str:
     rendered_world = ''
@@ -693,9 +710,16 @@ class World:
         for puzzle in puzzles_in_the_scene:
           details+= f'- {puzzle.name}: {(". ").join(puzzle.descriptions)}. El acertijo a resolver es: "{puzzle.problem}". La respuesta esperada, que NO PUEDES decirle al jugador (JAMÁS) es: "{puzzle.answer}".\n'
 
-      if len(self.npc_relationships) > 0:
+      party_members = [c for c in self.characters.values() if getattr(c, 'recruited', False)]
+      if len(party_members) > 0:
+        details += f"Miembros del grupo: {(', ').join([c.name for c in party_members])}\n"
+
+      # getattr(self, 'npc_relationships', []): defends against a World decoded via
+      # jsonpickle from a pre-recruitment trace, which has no npc_relationships attribute.
+      npc_relationships = getattr(self, 'npc_relationships', [])
+      if len(npc_relationships) > 0:
         details += "Relaciones conocidas (la composición del grupo del jugador SOLO afecta el sentimiento de los personajes listados aquí; no inventes reacciones para ningún otro par de personajes):\n"
-        for relationship in self.npc_relationships:
+        for relationship in npc_relationships:
           relation_word = "aliados" if relationship.tag == RelationshipTag.ALLY else "rivales"
           details += f"- {relationship.character_a} y {relationship.character_b} son {relation_word}.\n"
 
@@ -761,9 +785,16 @@ class World:
         for puzzle in puzzles_in_the_scene:
           details+= f'- <{puzzle.name}>: {(". ").join(puzzle.descriptions)}. The riddle to solve is: "{puzzle.problem}". The expected answer, that you CANNOT tell the player (EVER) is: "{puzzle.answer}".\n'
 
-      if len(self.npc_relationships) > 0:
+      party_members = [c for c in self.characters.values() if getattr(c, 'recruited', False)]
+      if len(party_members) > 0:
+        details += f"Party members: {(', ').join([c.name for c in party_members])}\n"
+
+      # getattr(self, 'npc_relationships', []): defends against a World decoded via
+      # jsonpickle from a pre-recruitment trace, which has no npc_relationships attribute.
+      npc_relationships = getattr(self, 'npc_relationships', [])
+      if len(npc_relationships) > 0:
         details += "Known relationships (the player's party composition only affects the feelings of characters listed here toward the player; do not invent reactions for any other character pair):\n"
-        for relationship in self.npc_relationships:
+        for relationship in npc_relationships:
           relation_word = "allies" if relationship.tag == RelationshipTag.ALLY else "rivals"
           details += f"- {relationship.character_a} and {relationship.character_b} are {relation_word}.\n"
 
