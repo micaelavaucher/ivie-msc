@@ -299,24 +299,31 @@ def check_recruitment_request(world, message, language, config=None):
     if not message:
         return None
 
-    if config is None:
-        config = load_config()
-    recruitment_enabled, feeling_threshold = get_recruitment_config(config)
-    if not recruitment_enabled:
-        return None
-
+    # Cheap keyword filter runs BEFORE any config read: load_config() hits disk and
+    # get_recruitment_config() can KeyError on a misconfigured config.ini, so we only
+    # want to pay that cost for messages that plausibly express recruit intent.
     message_lower = message.lower()
     recruit_keywords = ['recruit', 'join my party', 'join me', 'come with me',
                          'reclut', 'únete a mi', 'unete a mi', 'ven conmigo']
     if not any(k in message_lower for k in recruit_keywords):
         return None
 
+    if config is None:
+        config = load_config()
+    recruitment_enabled, feeling_threshold = get_recruitment_config(config)
+    if not recruitment_enabled:
+        return None
+
     for character in world.characters.values():
-        if character.location != world.player.location or not character.recruitable:
+        # getattr defends against a Character decoded via jsonpickle from a
+        # pre-recruitment trace: jsonpickle restores __dict__ directly without calling
+        # __init__, so such a Character has none of the recruitment attributes at all,
+        # and a bare `character.recruitable` would raise AttributeError.
+        if character.location != world.player.location or not getattr(character, 'recruitable', False):
             continue
         if character.name.lower() not in message_lower:
             continue
-        if character.recruited:
+        if getattr(character, 'recruited', False):
             return None
 
         if world.can_recruit(character.name, feeling_threshold):
@@ -325,11 +332,12 @@ def check_recruitment_request(world, message, language, config=None):
                 return f"🤝 **{character.name}** acepta unirse a tu grupo."
             return f"🤝 **{character.name}** agrees to join your party."
 
-        if character.recruitment_puzzle and character.recruitment_puzzle in world.puzzles:
-            puzzle_state = world.puzzle_states.get(character.recruitment_puzzle)
+        recruitment_puzzle = getattr(character, 'recruitment_puzzle', None)
+        if recruitment_puzzle and recruitment_puzzle in world.puzzles:
+            puzzle_state = world.puzzle_states.get(recruitment_puzzle)
             if puzzle_state == 'not_proposed':
-                puzzle = world.puzzles[character.recruitment_puzzle]
-                world.puzzle_states[character.recruitment_puzzle] = 'proposed'
+                puzzle = world.puzzles[recruitment_puzzle]
+                world.puzzle_states[recruitment_puzzle] = 'proposed'
                 if language == 'es':
                     return (f"🎭 **{character.name}** todavía no confía en ti lo suficiente.\n\n"
                             f"🧩 **Desafío: {puzzle.name}**\n📝 **Problema:** {puzzle.problem}")
@@ -571,13 +579,20 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
         if debug_response:
             return debug_response
 
-        puzzle_response = check_character_puzzle_mention(world, message, language)
-        if puzzle_response:
-            return puzzle_response
-
+        # check_recruitment_request must run before check_character_puzzle_mention:
+        # generation prompts steer a recruitable NPC's interaction.proposes_puzzle to
+        # point at that NPC's own recruitment_puzzle, so if the puzzle-mention check ran
+        # first it would intercept every mention of that NPC before the recruitment stage
+        # ever saw the message - the player would never get the recruitment "challenge"
+        # narration, and since check_character_puzzle_mention never marks a puzzle
+        # 'proposed', the same puzzle presentation would repeat indefinitely.
         recruitment_response = check_recruitment_request(world, message, language)
         if recruitment_response:
             return recruitment_response
+
+        puzzle_response = check_character_puzzle_mention(world, message, language)
+        if puzzle_response:
+            return puzzle_response
 
         number_of_turns += 1
         game_log_dictionary[number_of_turns] = {}
