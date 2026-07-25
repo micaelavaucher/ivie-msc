@@ -51,6 +51,18 @@ def test_recruitment_rejected_when_no_path_available():
     assert npc.recruited is False
 
 
+def test_recruitment_challenge_marks_puzzle_proposed_and_is_not_repeated():
+    world, npc = _world_with_recruitable_npc(FeelingLevel.NEUTRAL, recruitment_puzzle="Elder's Trust")
+    world.add_puzzle(Puzzle(name="Elder's Trust", descriptions=["desc"], problem="Solve this riddle", answer="a"))
+
+    first_response = check_recruitment_request(world, "I ask Elder to join my party", "en", config=_config_with_threshold())
+    assert first_response is not None
+    assert world.puzzle_states["Elder's Trust"] == 'proposed'
+
+    second_response = check_recruitment_request(world, "I ask Elder to join my party", "en", config=_config_with_threshold())
+    assert second_response is None
+
+
 def test_recruitment_ignored_when_message_has_no_recruit_intent():
     world, npc = _world_with_recruitable_npc(FeelingLevel.FRIENDLY)
     response = check_recruitment_request(world, "I look around the room", "en", config=_config_with_threshold())

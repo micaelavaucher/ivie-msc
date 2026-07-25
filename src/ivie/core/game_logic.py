@@ -329,6 +329,7 @@ def check_recruitment_request(world, message, language, config=None):
             puzzle_state = world.puzzle_states.get(character.recruitment_puzzle)
             if puzzle_state == 'not_proposed':
                 puzzle = world.puzzles[character.recruitment_puzzle]
+                world.puzzle_states[character.recruitment_puzzle] = 'proposed'
                 if language == 'es':
                     return (f"🎭 **{character.name}** todavía no confía en ti lo suficiente.\n\n"
                             f"🧩 **Desafío: {puzzle.name}**\n📝 **Problema:** {puzzle.problem}")
