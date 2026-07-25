@@ -12,6 +12,8 @@ import configparser
 import time
 from urllib.parse import quote_plus
 
+from .llm.structured_data_models import FeelingLevel
+
 load_dotenv()
 
 PATH_GAMELOGS = 'logs'
@@ -41,6 +43,12 @@ def get_enable_rag(config):
 def get_debug(config):
     """Get the debug setting from config."""
     return config["Options"].getboolean("Debug", fallback=False)
+
+def get_recruitment_config(config):
+    """Get recruitment settings from config."""
+    enabled = config["Recruitment"].getboolean("enabled", fallback=True)
+    feeling_threshold = FeelingLevel(config["Recruitment"].get("feeling_threshold", fallback="friendly"))
+    return enabled, feeling_threshold
 
 def get_database_config(config):
     """Get database settings from config."""
