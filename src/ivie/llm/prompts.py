@@ -154,6 +154,7 @@ REGLAS GENERALES:
 - Pasajes bloqueados solo se desbloquean si se cumplen los requisitos específicos
 - **REGLA DE MOVIMIENTO**: El jugador se mueve si intenta explícitamente ir a otra ubicación Y esa ubicación está listada en "From [ubicación actual] the player can access:" en el estado del mundo. Si una ubicación está listada como accesible, el movimiento ES posible, SIN EXCEPCIÓN, incluso si en algún "Recuerdo Relevante del Pasado" un intento anterior fue rechazado o un pasaje aparecía como bloqueado. El estado del mundo (accesible/bloqueado) es SIEMPRE el hecho actual y más reciente; una entrada en "Recuerdos Relevantes del Pasado" que contradiga el estado del mundo actual describe una situación PASADA que ya cambió (p. ej., un obstáculo que ya fue resuelto), NUNCA la situación actual. Si la ubicación NO aparece en "Blocked passages", el pasaje NO está bloqueado, sin importar lo que un recuerdo pasado sugiera.
 - Presta atención a las descripciones, capacidades y requisitos de cada componente
+- **REACCIONES SOCIALES DE PERSONAJES**: El sentimiento de un personaje hacia el jugador SOLO cambia por las reglas del motor del juego, nunca por tu narración. Si el estado del mundo lista "Relaciones conocidas", puedes reflejar en el diálogo/narración una rivalidad o alianza ya conocida cuando sea relevante. Si un personaje NO aparece listado en "Relaciones conocidas" junto a otro, NO inventes ninguna rivalidad, alianza o reacción entre ellos - trata a ese par como socialmente indiferente a las decisiones de grupo del jugador.
 
 CRÍTICO - OBJETOS RECIBIDOS DE PERSONAJES:
 Si el jugador le pide un objeto a un personaje (p. ej. "dile a X que me dé el objeto Y", "pídele el objeto a X") y el personaje accede a entregarlo (no tiene requisitos pendientes que lo impidan), DEBES incluir ese objeto en "moved_objects" con "new_location": "Inventory", exactamente igual que si el jugador lo hubiera tomado directamente. No es suficiente con narrar que el personaje entrega el objeto: el campo "moved_objects" DEBE reflejar ese cambio, o el objeto NO pasará al inventario del jugador aunque la narración diga lo contrario.
@@ -243,6 +244,7 @@ GENERAL RULES:
 - Blocked passages only unlock if specific requirements are met
 - **MOVEMENT RULE**: The player moves if they explicitly attempt to go to another location AND that location is listed in "From [current location] the player can access:" in the world state. If a location is listed as accessible, movement IS possible, WITH NO EXCEPTIONS, even if a 'Relevant Past Memory' shows an earlier attempt being refused or the passage once being blocked. The world state (accessible/blocked) is ALWAYS the current, most up-to-date fact; a 'Relevant Past Memories' entry that contradicts the current world state describes a PAST situation that has since changed (e.g., an obstacle that has since been resolved), NEVER the current situation. If the location does NOT appear under "Blocked passages", it is NOT blocked, regardless of what any past memory suggests.
 - Pay attention to the descriptions, capabilities, and requirements of each component
+- **NPC SOCIAL REACTIONS**: A character's feeling toward the player only changes due to the game engine's own rules, never from your narration. If the world state lists "Known relationships", you may reflect an already-known rivalry or alliance in dialogue/narration when relevant. If a character is NOT listed in "Known relationships" with another character, do not invent a rivalry, alliance, or any reaction between them - treat that pair as socially indifferent to the player's party choices.
 
 CRITICAL - ITEMS RECEIVED FROM CHARACTERS:
 If the player asks a character for an item (e.g. "tell X I need item Y, to give it to me", "ask X for the item") and the character agrees to hand it over (no pending unmet requirements block it), you MUST include that item in "moved_objects" with "new_location": "Inventory", exactly as if the player had taken it directly. Narrating that the character hands over the item is NOT enough by itself: the "moved_objects" field MUST reflect the change, otherwise the item will NOT actually enter the player's inventory even though the narration says it did.
@@ -837,6 +839,11 @@ Entidades clave a desarrollar:
 2. **Inventarios válidos**: Todo objeto en inventarios de personajes DEBE existir en la lista de objetos del mundo
 3. **Ubicaciones válidas**: Todos los personajes DEBEN estar ubicados en lugares que existen
 
+**REGLAS DE RECLUTAMIENTO DE PERSONAJES:**
+1. **Marca como reclutable SOLO a un subconjunto de personajes**: La mayoría de los personajes deben tener `recruitable: false`. Marca `recruitable: true` únicamente en personajes clave que tenga sentido que se unan al grupo del jugador.
+2. **initial_feeling**: Para personajes reclutables, define `initial_feeling` según la relación narrativa que ya tengan con el jugador (por ejemplo, "friendly" o "devoted" si son aliados desde el inicio, "neutral" o "wary" si aún no confían en el jugador). Para personajes no reclutables, deja el valor por defecto "neutral".
+3. **npc_relationships**: Añade una entrada en `npc_relationships` SOLO cuando la historia realmente motive una rivalidad ("rival") o alianza ("ally") entre dos personajes concretos. La mayoría de los pares de personajes NO deben tener ninguna entrada - eso es lo esperado, no un error.
+
 **REGLAS DE OBJETOS:**
 1. **Objetivos completables**: Si un objeto es requerido para el objetivo (`is_objective_target: true`), DEBE ser `gettable: true`
 2. **Consistencia funcional**: Objetos decorativos pueden ser `gettable: false`, objetos funcionales DEBEN ser `gettable: true`
@@ -967,6 +974,11 @@ Key entities to develop:
 1. **Functional interactions**: If a character has `interaction`, it MUST have `interaction_text`
 2. **Valid inventories**: Every object in characters' inventories MUST exist in the world’s object list
 3. **Valid locations**: All characters MUST be located in places that exist
+
+**CHARACTER RECRUITMENT RULES:**
+1. **Only mark a subset of characters as recruitable**: Most characters should have `recruitable: false`. Only set `recruitable: true` on key characters for whom it makes narrative sense to join the player's party.
+2. **initial_feeling**: For recruitable characters, set `initial_feeling` based on their existing narrative relationship with the player (e.g. "friendly" or "devoted" if they are already allies, "neutral" or "wary" if they don't yet trust the player). For non-recruitable characters, leave it at the default "neutral".
+3. **npc_relationships**: Only add an entry to `npc_relationships` when the story actually motivates a rivalry ("rival") or alliance ("ally") between two specific characters. Most character pairs should have NO entry at all - that is expected, not an error.
 
 **OBJECT RULES:**
 1. **Completable objectives**: If an object is required for the objective (`is_objective_target: true`), it MUST be `gettable: true`
@@ -1121,6 +1133,7 @@ Objetivo: Conseguir el Amuleto Mágico
 7. **Si el puzzle es dado por un personaje, el reward debe ser un item, y el item DEBE EXISTIR Y ESTAR EN EL INVENTARIO DEL PERSONAJE QUE LO PROPONE**
 8. **NO CRAFTING**: El motor del juego no soporta la creación o transformación de objetos. No crees puzzles que requieran que el jugador combine o altere objetos (p. ej., usar una receta para hacer una poción). Las recompensas deben ser objetos que se puedan usar directamente.
 9. **OBSTÁCULO vs. LLAVE**: Sé preciso. Un 'obstáculo' es lo que bloquea el camino (p. ej., 'una puerta cerrada'). El 'requisito' es la llave que lo quita (p. ej., 'una llave de hierro'). La llave nunca es el obstáculo.
+10. **RECOMPENSA DE RECLUTAMIENTO**: Si un personaje tiene `recruitable: true` y su `initial_feeling` es "hostile", "wary" o "neutral", PUEDES añadir un puzzle propuesto por ese mismo personaje (`proposed_by_character`) cuya única recompensa sea un `RecruitCharacterReward` con `character_name` igual al nombre de ese personaje. Esto representa el desafío que el jugador debe superar para reclutarlo. NO añadas este tipo de puzzle para personajes cuyo `initial_feeling` ya sea "friendly" o "devoted" - esos personajes se reclutan directamente sin desafío.
 
 **REGLAS OBLIGATORIAS PARA SISTEMA DE PISTAS:**
 Para CADA puzzle que añadas, DEBES incluir:
@@ -1217,6 +1230,7 @@ Objective: Obtain the Magic Amulet
 - **If a puzzle is proposed by a character, the reward must be an item, AND THAT ITEM SHOULD EXIST AND BE IN THE INVENTORY OF THE CHARACTER THAT PROPOSES THE PUZZLE**
 - **NO CRAFTING**: The game engine does not support crafting or transforming items. Do not create puzzles that require the player to combine or alter items (e.g., using a recipe to make a potion). Rewards must be items that can be used directly.
 - **OBSTACLE vs. KEY**: Be precise. An 'obstacle' is the thing blocking the way (e.g., 'a locked door'). The 'requirement' is the key that removes it (e.g., 'an iron key'). The key is never the obstacle.
+- **RECRUITMENT REWARD**: If a character has `recruitable: true` and their `initial_feeling` is "hostile", "wary", or "neutral", you MAY add a puzzle proposed by that same character (`proposed_by_character`) whose only reward is a `RecruitCharacterReward` with `character_name` equal to that character's name. This represents the challenge the player must complete to recruit them. Do NOT add this kind of puzzle for characters whose `initial_feeling` is already "friendly" or "devoted" - those characters can be recruited directly without a challenge.
 
 **MANDATORY RULES FOR HINT SYSTEM:**
 For EACH puzzle you add, YOU MUST include:

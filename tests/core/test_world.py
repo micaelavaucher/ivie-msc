@@ -121,3 +121,31 @@ def test_recruit_character_returns_false_and_does_not_recruit_non_recruitable_ch
     world.add_character(bystander)
     assert world.recruit_character("Bystander") is False
     assert bystander.recruited is False
+
+
+def test_render_world_lists_known_relationships_when_present():
+    town = Location(name="Town", descriptions=["desc"])
+    player = Character(name="Player", descriptions=["desc"], location=town)
+    npc_a = Character(name="Ally A", descriptions=["desc"], location=town)
+    npc_b = Character(name="Ally B", descriptions=["desc"], location=town)
+    world = World(player)
+    world.add_location(town)
+    world.add_character(npc_a)
+    world.add_character(npc_b)
+    world.npc_relationships.append(NPCRelationship(character_a="Ally A", character_b="Ally B", tag=RelationshipTag.RIVAL))
+
+    rendered = world.render_world(language='en')
+
+    assert "Ally A" in rendered and "Ally B" in rendered
+    assert "rivals" in rendered
+
+
+def test_render_world_omits_relationships_section_when_none_defined():
+    town = Location(name="Town", descriptions=["desc"])
+    player = Character(name="Player", descriptions=["desc"], location=town)
+    world = World(player)
+    world.add_location(town)
+
+    rendered = world.render_world(language='en')
+
+    assert "Known relationships" not in rendered

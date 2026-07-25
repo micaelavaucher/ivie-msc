@@ -693,6 +693,12 @@ class World:
         for puzzle in puzzles_in_the_scene:
           details+= f'- {puzzle.name}: {(". ").join(puzzle.descriptions)}. El acertijo a resolver es: "{puzzle.problem}". La respuesta esperada, que NO PUEDES decirle al jugador (JAMÁS) es: "{puzzle.answer}".\n'
 
+      if len(self.npc_relationships) > 0:
+        details += "Relaciones conocidas (la composición del grupo del jugador SOLO afecta el sentimiento de los personajes listados aquí; no inventes reacciones para ningún otro par de personajes):\n"
+        for relationship in self.npc_relationships:
+          relation_word = "aliados" if relationship.tag == RelationshipTag.ALLY else "rivales"
+          details += f"- {relationship.character_a} y {relationship.character_b} son {relation_word}.\n"
+
     return world_description + '\n' + details
 
   def __render_world_english(self, *,  detail_components:bool = True) -> str:
@@ -754,6 +760,12 @@ class World:
         details+="Puzzles:\n"
         for puzzle in puzzles_in_the_scene:
           details+= f'- <{puzzle.name}>: {(". ").join(puzzle.descriptions)}. The riddle to solve is: "{puzzle.problem}". The expected answer, that you CANNOT tell the player (EVER) is: "{puzzle.answer}".\n'
+
+      if len(self.npc_relationships) > 0:
+        details += "Known relationships (the player's party composition only affects the feelings of characters listed here toward the player; do not invent reactions for any other character pair):\n"
+        for relationship in self.npc_relationships:
+          relation_word = "allies" if relationship.tag == RelationshipTag.ALLY else "rivals"
+          details += f"- {relationship.character_a} and {relationship.character_b} are {relation_word}.\n"
 
     return world_description + '\n' + details
 
