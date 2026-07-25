@@ -15,6 +15,7 @@ from .world_utils import create_world_state_summary
 from ..llm.structured_data_models import WorldUpdate
 from ..llm.memory_system import create_memory_system
 from ..database.mongodb_handler import db_handler
+from ..config import load_config, get_recruitment_config
 
 def generate_starting_narration(world, language, narrative_model):
     system_msg_current_scene, user_msg_current_scene = prompt_narrate_current_scene(
@@ -294,6 +295,53 @@ def check_character_puzzle_mention(world, message, language):
                     return response
     return None
 
+def check_recruitment_request(world, message, language, config=None):
+    if not message:
+        return None
+
+    if config is None:
+        config = load_config()
+    recruitment_enabled, feeling_threshold = get_recruitment_config(config)
+    if not recruitment_enabled:
+        return None
+
+    message_lower = message.lower()
+    recruit_keywords = ['recruit', 'join my party', 'join me', 'come with me',
+                         'reclut', 'únete a mi', 'unete a mi', 'ven conmigo']
+    if not any(k in message_lower for k in recruit_keywords):
+        return None
+
+    for character in world.characters.values():
+        if character.location != world.player.location or not character.recruitable:
+            continue
+        if character.name.lower() not in message_lower:
+            continue
+        if character.recruited:
+            return None
+
+        if world.can_recruit(character.name, feeling_threshold):
+            world.recruit_character(character.name)
+            if language == 'es':
+                return f"🤝 **{character.name}** acepta unirse a tu grupo."
+            return f"🤝 **{character.name}** agrees to join your party."
+
+        if character.recruitment_puzzle and character.recruitment_puzzle in world.puzzles:
+            puzzle_state = world.puzzle_states.get(character.recruitment_puzzle)
+            if puzzle_state == 'not_proposed':
+                puzzle = world.puzzles[character.recruitment_puzzle]
+                if language == 'es':
+                    return (f"🎭 **{character.name}** todavía no confía en ti lo suficiente.\n\n"
+                            f"🧩 **Desafío: {puzzle.name}**\n📝 **Problema:** {puzzle.problem}")
+                return (f"🎭 **{character.name}** doesn't trust you enough yet.\n\n"
+                        f"🧩 **Challenge: {puzzle.name}**\n📝 **Problem:** {puzzle.problem}")
+            return None
+
+        if language == 'es':
+            return f"🎭 **{character.name}** rechaza unirse a ti por ahora."
+        return f"🎭 **{character.name}** declines to join you for now."
+
+    return None
+
 def handle_debug_command(message, world, language):
     message_lower = message.lower()
     if any(word in message_lower for word in ["hint", "pista", "help", "ayuda", "clue", "piste"]):
@@ -525,6 +573,10 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
         puzzle_response = check_character_puzzle_mention(world, message, language)
         if puzzle_response:
             return puzzle_response
+
+        recruitment_response = check_recruitment_request(world, message, language)
+        if recruitment_response:
+            return recruitment_response
 
         number_of_turns += 1
         game_log_dictionary[number_of_turns] = {}
