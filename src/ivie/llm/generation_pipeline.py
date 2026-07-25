@@ -715,38 +715,41 @@ def verify_objective_completability(world: GeneratedWorld) -> bool:
         return False
 
 def verify_puzzle_rewards_and_fix(world: GeneratedWorld) -> tuple[bool, GeneratedWorld]:
-    from .structured_data_models import GeneratedItem, ItemReward
-    
+    from .structured_data_models import GeneratedItem, ItemReward, RecruitCharacterReward, ItemActionType
+
     # Track changes made
     items_created = []
-    
+    all_ok = True
+
     # Get existing item names for quick lookup
     existing_item_names = {item.name for item in world.items}
     existing_item_names_lower = {name.lower() for name in existing_item_names}
-    
+    characters_by_name = {character.name: character for character in world.characters}
+
     for puzzle in world.puzzles:
-        
+
         for reward in puzzle.rewards:
             if isinstance(reward, ItemReward):
                 item_name = reward.item_name
-                
+
                 if item_name.lower() not in existing_item_names_lower:
                     print(f"[WARNING] ItemReward item '{item_name}' does not exist. Creating it...")
-                    
+
                     # Create the missing item
                     new_item = GeneratedItem(
                         name=item_name,
+                        action_type=ItemActionType.LORE,
                         descriptions=[f"A {item_name.lower()} obtained as a reward for solving puzzles."],
                         gettable=True,
                         is_objective_target=False,
                         relevance_to_objective=f"Reward item from puzzle '{puzzle.name}'",
                         required_for=[]
                     )
-                    
+
                     world.items.append(new_item)
                     existing_item_names.add(item_name)
                     items_created.append(item_name)
-                    
+
                     # Determine where to place the item
                     # For observation puzzles, the item should be in the location, not on the character
                     if puzzle.puzzle_type == "observation" and puzzle.location:
@@ -771,12 +774,12 @@ def verify_puzzle_rewards_and_fix(world: GeneratedWorld) -> tuple[bool, Generate
                                 print(f"[INFO] Added item '{item_name}' to character '{character.name}' inventory")
                                 char_found = True
                                 break
-                        
+
                         if not char_found:
                             print(f"[WARNING] Character '{puzzle.proposed_by_character}' not found, adding item to first location")
                             if world.locations:
                                 world.locations[0].items.append(item_name)
-                    
+
                     elif puzzle.location:
                         # Add to puzzle location
                         location_found = False
@@ -786,16 +789,25 @@ def verify_puzzle_rewards_and_fix(world: GeneratedWorld) -> tuple[bool, Generate
                                 print(f"[INFO] Added item '{item_name}' to location '{location.name}'")
                                 location_found = True
                                 break
-                        
+
                         if not location_found:
                             print(f"[WARNING] Puzzle location '{puzzle.location}' not found, adding item to first location")
                             if world.locations:
                                 world.locations[0].items.append(item_name)
-                    
+
                     else:
                         # Add to first location as fallback
                         if world.locations:
                             world.locations[0].items.append(item_name)
                             print(f"[INFO] Added item '{item_name}' to location '{world.locations[0].name}' (fallback)")
-        
-    return True, world
+
+            elif isinstance(reward, RecruitCharacterReward):
+                character = characters_by_name.get(reward.character_name)
+                if character is None:
+                    print(f"[ERROR] RecruitCharacterReward in puzzle '{puzzle.name}' references non-existent character '{reward.character_name}'")
+                    all_ok = False
+                elif not character.recruitable:
+                    print(f"[WARNING] RecruitCharacterReward character '{character.name}' was not marked recruitable. Fixing...")
+                    character.recruitable = True
+
+    return all_ok, world
