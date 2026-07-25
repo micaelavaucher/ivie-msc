@@ -164,6 +164,25 @@ not checked against the recruitment precondition again). No `strength` field,
 no decay, no chained/transitive inference. Extending this later (e.g. adding a
 strength int, or more tags) is additive, not a rework.
 
+**Coverage is sparse by design.** `world.npc_relationships` should only contain
+entries for pairs where the generated narrative actually gives them a rivalry
+or alliance — most NPC pairs have no entry at all, and that absence is the
+expected, common case, not missing data. A world with, say, five key characters
+might have one or two relationship entries total, not one per pair.
+
+**Narration must respect the absence of a tag.** When party composition
+changes, only characters who have an `NPCRelationship` entry with the newly
+recruited NPC should have any reaction — mechanical (the feeling shift above)
+or narrative (the turn's narration text). The narrator LLM prompt
+(`prompt_world_update_structured` / `render_world` in `prompts.py`) needs to be
+told which relationships exist, scoped to characters relevant to the current
+turn, and explicitly instructed not to invent a reaction, rivalry, or alliance
+for any character pair that isn't in `world.npc_relationships` — silence/
+indifference is the correct default, not free-form narrative color. This
+mirrors the existing instruction pattern that keeps the narrator from acting on
+unstated state (e.g. respecting `interaction.requires` gates, and memory being
+explicitly flavor-only and never a driver of mechanics).
+
 ## 4. Impact on completability verification
 
 Because recruitable NPCs are always optional, **`verify_objective_completability`
@@ -196,7 +215,9 @@ optional.
   `GeneratedWorld` gains `npc_relationships: List[GeneratedRelationship] = []`,
   same shape as the runtime class (`character_a`, `character_b`, `tag`), so the
   LLM can tag rivalries/alliances between key characters it has already
-  generated in the same step.
+  generated in the same step. The generation prompt should instruct the LLM to
+  add an entry only where the backstory/narrative actually motivates a rivalry
+  or alliance, not for every pair — sparse output is correct, per §3.
 - **Step 4 (Puzzles)**: for any recruitable NPC generated below the feeling
   threshold, the LLM may add a puzzle proposed by that character whose reward
   is `RecruitCharacterReward` — no restructuring of the step, just a new
