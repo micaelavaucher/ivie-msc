@@ -113,8 +113,15 @@ class RecruitCharacterReward(BaseModel):
     character_name: str
 ```
 
-resolved the same way `PassageReward`/`ItemReward` are today when a puzzle is
-solved.
+Solving the puzzle does not recruit `X` automatically — it only advances
+`world.puzzle_states[X.recruitment_puzzle]` to `'solved'`, which is one of
+the two conditions the disjunction above checks. The player still has to ask
+to recruit `X` (the same `check_recruitment_request` path described below)
+after solving, exactly as when feeling is already high enough. This mirrors
+how `PassageReward`/`ItemReward` are already resolved elsewhere in the
+codebase (a puzzle solve unlocks a fact about the world; a separate player
+action is what acts on that fact) rather than firing `recruit_character`
+directly from `World._apply_puzzle_rewards`.
 
 **Detecting "ask to recruit":** a new short-circuit stage in `game_logic.py`,
 `check_recruitment_request(message, world)`, inserted into the game loop
