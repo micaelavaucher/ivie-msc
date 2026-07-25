@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+logs/memory_db/
+*.egg-info/
