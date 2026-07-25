@@ -7,6 +7,18 @@ and methods to update according to the detected changes by a language model.
 import re
 from typing import Type
 
+from ..llm.structured_data_models import FeelingLevel, RelationshipTag
+
+
+FEELING_ORDER = [FeelingLevel.HOSTILE, FeelingLevel.WARY, FeelingLevel.NEUTRAL, FeelingLevel.FRIENDLY, FeelingLevel.DEVOTED]
+
+
+def shift_feeling(level: FeelingLevel, steps: int) -> FeelingLevel:
+  """Move a FeelingLevel up or down the ladder, clamped at both ends."""
+  index = FEELING_ORDER.index(level)
+  new_index = max(0, min(len(FEELING_ORDER) - 1, index + steps))
+  return FEELING_ORDER[new_index]
+
 
 class Component:
   """A class to represent a component of the world.
@@ -162,7 +174,9 @@ class Location (Component):
 
 class Character (Component):
   """A class to represent a character."""
-  def __init__ (self, name:str, descriptions: 'list[str]', location:Location, inventory: 'list[Item]' = None, interaction=None):
+  def __init__ (self, name:str, descriptions: 'list[str]', location:Location, inventory: 'list[Item]' = None, interaction=None,
+                recruitable: bool = False, feeling: 'FeelingLevel' = FeelingLevel.NEUTRAL, recruited: bool = False,
+                recruitment_puzzle: str = None):
 
     super().__init__(name, descriptions)
     """inherited from Component"""
@@ -175,9 +189,21 @@ class Character (Component):
 
     self.visited_locations = {self.location.name: []}
     """a dictionary that contains the successive descriptions of the visited places"""
-    
+
     self.interaction = interaction
     """interaction data from GeneratedCharacter, contains proposes_puzzle and other interaction info"""
+
+    self.recruitable = recruitable
+    """whether the player can recruit this character into their party, set at generation time"""
+
+    self.feeling = feeling
+    """this character's FeelingLevel toward the player; mutated only by the party relationship ripple"""
+
+    self.recruited = recruited
+    """whether this character has joined the player's party"""
+
+    self.recruitment_puzzle = recruitment_puzzle
+    """name of the Puzzle that, when solved, recruits this character regardless of feeling; or None"""
 
   def move(self, new_location: Location):
     """Move the character to a new location."""
@@ -213,6 +239,14 @@ class Character (Component):
       character.save_item(item, self)
     except Exception as e:
       print(e)
+
+
+class NPCRelationship:
+  """A symmetric rivalry or alliance tag between two characters, used for the party social ripple effect."""
+  def __init__(self, character_a: str, character_b: str, tag: RelationshipTag):
+    self.character_a = character_a
+    self.character_b = character_b
+    self.tag = tag
 
 
 class World:
@@ -254,6 +288,9 @@ class World:
     # Puzzle state tracking
     self.puzzle_states = {}
     """track the state of puzzles: 'not_proposed', 'proposed', 'solved'"""
+
+    self.npc_relationships = []
+    """list of NPCRelationship: sparse, symmetric rival/ally tags between characters"""
 
   ## Deprecated ##
   def set_objective (self, first_component: Type[Component], second_component: Type[Component]):
@@ -446,6 +483,49 @@ class World:
   def add_characters (self, characters: 'list[Character]') -> None:
     for character in characters:
       self.add_character(character)
+
+  def get_party(self) -> 'list[Character]':
+    """Return the characters currently recruited into the player's party."""
+    return [character for character in self.characters.values() if character.recruited]
+
+  def can_recruit(self, character_name: str, feeling_threshold: 'FeelingLevel') -> bool:
+    """Check whether character_name can be recruited: their feeling already meets feeling_threshold,
+    or their recruitment challenge puzzle has been solved. These are independent conditions."""
+    character = self.characters.get(character_name)
+    if character is None or not character.recruitable or character.recruited:
+      return False
+
+    feeling_ok = FEELING_ORDER.index(character.feeling) >= FEELING_ORDER.index(feeling_threshold)
+    puzzle_ok = (character.recruitment_puzzle is not None and
+                 self.puzzle_states.get(character.recruitment_puzzle) == 'solved')
+    return feeling_ok or puzzle_ok
+
+  def recruit_character(self, character_name: str) -> bool:
+    """Mark character_name as recruited and apply the social ripple to related NPCs. Returns False if
+    the character doesn't exist or is already recruited."""
+    character = self.characters.get(character_name)
+    if character is None or character.recruited:
+      return False
+
+    character.recruited = True
+    self._apply_relationship_ripple(character_name)
+    return True
+
+  def _apply_relationship_ripple(self, recruited_character_name: str) -> None:
+    for relationship in self.npc_relationships:
+      if relationship.character_a == recruited_character_name:
+        other_name = relationship.character_b
+      elif relationship.character_b == recruited_character_name:
+        other_name = relationship.character_a
+      else:
+        continue
+
+      other = self.characters.get(other_name)
+      if other is None:
+        continue
+
+      step = 1 if relationship.tag == RelationshipTag.ALLY else -1
+      other.feeling = shift_feeling(other.feeling, step)
 
   def render_world(self, *, language:str = 'en', detail_components:bool = True) -> str:
     rendered_world = ''
