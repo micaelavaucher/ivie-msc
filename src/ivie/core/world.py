@@ -502,9 +502,9 @@ class World:
 
   def recruit_character(self, character_name: str) -> bool:
     """Mark character_name as recruited and apply the social ripple to related NPCs. Returns False if
-    the character doesn't exist or is already recruited."""
+    the character doesn't exist, isn't recruitable, or is already recruited."""
     character = self.characters.get(character_name)
-    if character is None or character.recruited:
+    if character is None or not character.recruitable or character.recruited:
       return False
 
     character.recruited = True

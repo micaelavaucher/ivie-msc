@@ -110,3 +110,14 @@ def test_recruiting_with_no_relationship_tag_does_not_affect_other_npcs():
     world.add_character(npc_b)
     world.recruit_character("A")
     assert npc_b.feeling == FeelingLevel.NEUTRAL
+
+
+def test_recruit_character_returns_false_and_does_not_recruit_non_recruitable_character():
+    town = Location(name="Town", descriptions=["desc"])
+    player = Character(name="Player", descriptions=["desc"], location=town)
+    bystander = Character(name="Bystander", descriptions=["desc"], location=town, recruitable=False)
+    world = World(player)
+    world.add_location(town)
+    world.add_character(bystander)
+    assert world.recruit_character("Bystander") is False
+    assert bystander.recruited is False
