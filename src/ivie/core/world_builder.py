@@ -4,8 +4,16 @@ import json
 import jsonpickle
 from typing import Dict
 
-from .world import World, Location, Item, Character, Puzzle
-from ..llm.structured_data_models import GeneratedWorld, WorldExpansion
+from .world import World, Location, Item, Character, Puzzle, NPCRelationship
+from ..llm.structured_data_models import GeneratedWorld, WorldExpansion, RecruitCharacterReward, FeelingLevel
+
+
+def _find_recruitment_puzzle_for_character(character_name: str, puzzles_dict: Dict[str, Puzzle]) -> str:
+    for puzzle in puzzles_dict.values():
+        for reward in puzzle.rewards:
+            if isinstance(reward, RecruitCharacterReward) and reward.character_name == character_name:
+                return puzzle.name
+    return None
 
 
 def create_world_from_trace(trace_data: dict) -> World:
@@ -133,7 +141,13 @@ def create_world_from_llm_response(world_data) -> World:
         for char_data in generated_world.characters:
             char_inventory = [items_dict[item_name] for item_name in getattr(char_data, 'inventory', []) if item_name in items_dict]
             char_location = locations_dict.get(getattr(char_data, 'location', None), player_location)
-            character = Character(name=char_data.name, descriptions=char_data.descriptions, location=char_location, inventory=char_inventory, interaction=getattr(char_data, 'interaction', None))
+            character = Character(
+                name=char_data.name, descriptions=char_data.descriptions, location=char_location,
+                inventory=char_inventory, interaction=getattr(char_data, 'interaction', None),
+                recruitable=getattr(char_data, 'recruitable', False),
+                feeling=getattr(char_data, 'initial_feeling', FeelingLevel.NEUTRAL),
+                recruitment_puzzle=_find_recruitment_puzzle_for_character(char_data.name, puzzles_dict),
+            )
             characters_list.append(character)
 
         world = World(player)
@@ -145,6 +159,13 @@ def create_world_from_llm_response(world_data) -> World:
             world.add_character(character)
         for puzzle in puzzles_dict.values():
             world.add_puzzle(puzzle)
+
+        for relationship_data in getattr(generated_world, 'npc_relationships', []):
+            world.npc_relationships.append(NPCRelationship(
+                character_a=relationship_data.character_a,
+                character_b=relationship_data.character_b,
+                tag=relationship_data.tag,
+            ))
 
         if getattr(generated_world, 'objective', None):
             world.objective_data = generated_world.objective

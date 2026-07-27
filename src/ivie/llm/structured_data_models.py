@@ -32,6 +32,7 @@ class RewardType(str, Enum):
     PASSAGE = "passage"                 # Desbloquea un pasaje
     ITEM = "item"                       # Otorga un objeto
     OBJECTIVE_COMPLETION = "objective_completion"  # Completa directamente el objetivo
+    RECRUIT_CHARACTER = "recruit_character"  # Recluta un personaje al grupo del jugador
 
 class RequirementType(str, Enum):
     ITEM = "item"                       # Necesita un objeto específico
@@ -50,6 +51,19 @@ class ItemActionType(str, Enum):
     SOLVE_PUZZLE = "solve_puzzle"       # The item is a key or clue for a puzzle
     GIVE_TO_CHARACTER = "give_to_character" # The item is meant to be given to an NPC
     LORE = "lore"                       # The item provides story/information but has no mechanical use
+
+class FeelingLevel(str, Enum):
+    """A recruitable NPC's feeling toward the player, ordered low to high."""
+    HOSTILE = "hostile"
+    WARY = "wary"
+    NEUTRAL = "neutral"
+    FRIENDLY = "friendly"
+    DEVOTED = "devoted"
+
+class RelationshipTag(str, Enum):
+    """A symmetric social tag between two characters, used for the party ripple effect."""
+    RIVAL = "rival"
+    ALLY = "ally"
 
 #---- Reward Models (lo que se obtiene al resolver puzzles) ------------------
 class PuzzleReward(BaseModel):
@@ -71,6 +85,11 @@ class ItemReward(PuzzleReward):
 class ObjectiveReward(PuzzleReward):
     """Directly completes the objective."""
     reward_type: RewardType = Field(default=RewardType.OBJECTIVE_COMPLETION)
+
+class RecruitCharacterReward(PuzzleReward):
+    """Recruits a character into the player's party."""
+    reward_type: RewardType = Field(default=RewardType.RECRUIT_CHARACTER)
+    character_name: str = Field(description="Name of the recruitable character this puzzle recruits. Note: this character must exist in the world and have recruitable=True")
 
 #---- Requirement Models (lo que se necesita para activar algo) --------------
 class Requirement(BaseModel):
@@ -108,7 +127,7 @@ class GeneratedPuzzle(BaseModel):
     location: Optional[str] = Field(default=None, description="Location where puzzle is found, or None if given by character. Note: if specified, this location must exist in the world")
     proposed_by_character: Optional[str] = Field(default=None, description="Character who proposes this puzzle, or None if environmental, NONE IF REWARD IS A PASSAGE. Note: if specified, this character must exist in the world")
     proposed_by_location: Optional[str] = Field(default=None, description="Location that when investigated/examined should propose this puzzle, or None if it's given by a character.")
-    rewards: List[Union[PassageReward, ItemReward, ObjectiveReward]] = Field(
+    rewards: List[Union[PassageReward, ItemReward, ObjectiveReward, RecruitCharacterReward]] = Field(
         description="What you get when you solve this puzzle. Note: all reward items and locations must exist in the world"
     )
     relevance_to_objective: str = Field(description="How solving this puzzle helps achieve the main objective")
@@ -145,6 +164,14 @@ class GeneratedCharacter(BaseModel):
     location: str = Field(description="Location where this character is placed. CRITICAL LOGIC RULE: If this character holds an item or puzzle solution required to unlock a passage, they CANNOT be placed in the location behind that very passage or any location only accessible through it.")
     inventory: List[str] = Field(default=[], description="Items this character starts with. Note: all items must exist in the world")
     interaction: Optional[CharacterInteraction] = Field(default=None, description="How this character can help the player, or None if just decorative")
+    recruitable: bool = Field(default=False, description="Whether the player can recruit this character into their party. Only a subset of characters should be recruitable.")
+    initial_feeling: FeelingLevel = Field(default=FeelingLevel.NEUTRAL, description="This character's starting feeling toward the player. Only meaningful when recruitable=True.")
+
+class GeneratedRelationship(BaseModel):
+    """A symmetric rivalry or alliance tag between two characters."""
+    character_a: str = Field(description="Name of the first character in this relationship. Note: this character must exist in the world")
+    character_b: str = Field(description="Name of the second character in this relationship. Note: this character must exist in the world")
+    tag: RelationshipTag = Field(description="Whether these two characters are rivals or allies")
 
 class BlockedPassage(BaseModel):
     location: str = Field(description="Destination location that is blocked. Note: this location must exist in the world and be in the connecting_locations list")
@@ -205,6 +232,7 @@ class GeneratedWorld(BaseModel):
     dependency_chains: List[DependencyChain] = Field(description="Possible paths to complete the objective. Note: all chains must be actually completable with the given world elements")
     world_theme: str = Field(description="Overall theme or setting of the world")
     narrative_context: str = Field(description="Background story that explains why everything is connected")
+    npc_relationships: List[GeneratedRelationship] = Field(default=[], description="Rivalries or alliances between characters. Only include a pair here if the narrative actually motivates a rivalry or alliance - most character pairs should have no entry.")
 
 #---- World Update Models (existing, keeping for compatibility) --------------
 class MovedObject(BaseModel):

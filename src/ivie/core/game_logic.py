@@ -15,6 +15,7 @@ from .world_utils import create_world_state_summary
 from ..llm.structured_data_models import WorldUpdate
 from ..llm.memory_system import create_memory_system
 from ..database.mongodb_handler import db_handler
+from ..config import load_config, get_recruitment_config
 
 def generate_starting_narration(world, language, narrative_model):
     system_msg_current_scene, user_msg_current_scene = prompt_narrate_current_scene(
@@ -294,6 +295,62 @@ def check_character_puzzle_mention(world, message, language):
                     return response
     return None
 
+def check_recruitment_request(world, message, language, config=None):
+    if not message:
+        return None
+
+    # Cheap keyword filter runs BEFORE any config read: load_config() hits disk and
+    # get_recruitment_config() can KeyError on a misconfigured config.ini, so we only
+    # want to pay that cost for messages that plausibly express recruit intent.
+    message_lower = message.lower()
+    recruit_keywords = ['recruit', 'join my party', 'join me', 'come with me',
+                         'reclut', 'únete a mi', 'unete a mi', 'ven conmigo']
+    if not any(k in message_lower for k in recruit_keywords):
+        return None
+
+    if config is None:
+        config = load_config()
+    recruitment_enabled, feeling_threshold = get_recruitment_config(config)
+    if not recruitment_enabled:
+        return None
+
+    for character in world.characters.values():
+        # getattr defends against a Character decoded via jsonpickle from a
+        # pre-recruitment trace: jsonpickle restores __dict__ directly without calling
+        # __init__, so such a Character has none of the recruitment attributes at all,
+        # and a bare `character.recruitable` would raise AttributeError.
+        if character.location != world.player.location or not getattr(character, 'recruitable', False):
+            continue
+        if character.name.lower() not in message_lower:
+            continue
+        if getattr(character, 'recruited', False):
+            return None
+
+        if world.can_recruit(character.name, feeling_threshold):
+            world.recruit_character(character.name)
+            if language == 'es':
+                return f"🤝 **{character.name}** acepta unirse a tu grupo."
+            return f"🤝 **{character.name}** agrees to join your party."
+
+        recruitment_puzzle = getattr(character, 'recruitment_puzzle', None)
+        if recruitment_puzzle and recruitment_puzzle in world.puzzles:
+            puzzle_state = world.puzzle_states.get(recruitment_puzzle)
+            if puzzle_state == 'not_proposed':
+                puzzle = world.puzzles[recruitment_puzzle]
+                world.puzzle_states[recruitment_puzzle] = 'proposed'
+                if language == 'es':
+                    return (f"🎭 **{character.name}** todavía no confía en ti lo suficiente.\n\n"
+                            f"🧩 **Desafío: {puzzle.name}**\n📝 **Problema:** {puzzle.problem}")
+                return (f"🎭 **{character.name}** doesn't trust you enough yet.\n\n"
+                        f"🧩 **Challenge: {puzzle.name}**\n📝 **Problem:** {puzzle.problem}")
+            return None
+
+        if language == 'es':
+            return f"🎭 **{character.name}** rechaza unirse a ti por ahora."
+        return f"🎭 **{character.name}** declines to join you for now."
+
+    return None
+
 def handle_debug_command(message, world, language):
     message_lower = message.lower()
     if any(word in message_lower for word in ["hint", "pista", "help", "ayuda", "clue", "piste"]):
@@ -521,6 +578,17 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
         debug_response = handle_debug_command(message, world, language)
         if debug_response:
             return debug_response
+
+        # check_recruitment_request must run before check_character_puzzle_mention:
+        # generation prompts steer a recruitable NPC's interaction.proposes_puzzle to
+        # point at that NPC's own recruitment_puzzle, so if the puzzle-mention check ran
+        # first it would intercept every mention of that NPC before the recruitment stage
+        # ever saw the message - the player would never get the recruitment "challenge"
+        # narration, and since check_character_puzzle_mention never marks a puzzle
+        # 'proposed', the same puzzle presentation would repeat indefinitely.
+        recruitment_response = check_recruitment_request(world, message, language)
+        if recruitment_response:
+            return recruitment_response
 
         puzzle_response = check_character_puzzle_mention(world, message, language)
         if puzzle_response:
