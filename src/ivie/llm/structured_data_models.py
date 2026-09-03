@@ -65,6 +65,27 @@ class RelationshipTag(str, Enum):
     RIVAL = "rival"
     ALLY = "ally"
 
+class PuzzleConditionType(str, Enum):
+    """A world-state predicate the engine can check on its own to decide a puzzle is solved.
+
+    These exist so that puzzles whose solution is an ACTION (ring the bell, hand over the
+    ribbon, reach the shrine) are verifiable at all: their `answer` is prose the player will
+    never type verbatim, so string matching alone leaves them permanently unsolved.
+    """
+    HAS_ITEM = "has_item"                                   # item is in the player's inventory
+    ITEM_GIVEN_TO_CHARACTER = "item_given_to_character"     # item is in that character's inventory
+    ITEM_IN_LOCATION = "item_in_location"                   # item has been placed in that location
+    PLAYER_AT_LOCATION = "player_at_location"               # player is standing in that location
+    TALKED_TO_CHARACTER = "talked_to_character"             # player has interacted with that character
+
+class PuzzleSolutionCondition(BaseModel):
+    """One engine-checkable condition. A puzzle is solved when ALL of its conditions hold."""
+    condition_type: PuzzleConditionType = Field(description="Which world-state fact the engine must check")
+    description: str = Field(description="Plain-language statement of what the player must do to satisfy this condition")
+    item_name: Optional[str] = Field(default=None, description="Item involved. Required for has_item, item_given_to_character and item_in_location. Note: this item must exist in the world")
+    character_name: Optional[str] = Field(default=None, description="Character involved. Required for item_given_to_character and talked_to_character. Note: this character must exist in the world")
+    location_name: Optional[str] = Field(default=None, description="Location involved. Required for item_in_location and player_at_location. Note: this location must exist in the world")
+
 #---- Reward Models (lo que se obtiene al resolver puzzles) ------------------
 class PuzzleReward(BaseModel):
     """Base model for what you get when solving a puzzle."""
@@ -124,6 +145,14 @@ class GeneratedPuzzle(BaseModel):
     descriptions: List[str] = Field(description="List of descriptive texts explaining the puzzle")
     problem: str = Field(description="Clear statement of the puzzle problem")
     answer: str = Field(description="The solution to the puzzle")
+    accepted_answers: List[str] = Field(
+        default=[],
+        description="Alternative phrasings of the answer that must also be accepted (synonyms, with/without articles, the bare keyword). Always include at least the shortest keyword form of the answer. Only meaningful for puzzles the player solves by SAYING something."
+    )
+    solution_conditions: List[PuzzleSolutionCondition] = Field(
+        default=[],
+        description="Engine-checkable world-state conditions that mean this puzzle is solved. REQUIRED for any puzzle whose solution is an ACTION rather than a spoken answer (e.g. answer 'Ring the silver bell' -> conditions: has_item 'Silver Bell' + talked_to_character 'The Queen'). Every puzzle must be solvable via either accepted_answers or solution_conditions - never leave both empty."
+    )
     location: Optional[str] = Field(default=None, description="Location where puzzle is found, or None if given by character. Note: if specified, this location must exist in the world")
     proposed_by_character: Optional[str] = Field(default=None, description="Character who proposes this puzzle, or None if environmental, NONE IF REWARD IS A PASSAGE. Note: if specified, this character must exist in the world")
     proposed_by_location: Optional[str] = Field(default=None, description="Location that when investigated/examined should propose this puzzle, or None if it's given by a character.")
@@ -249,8 +278,8 @@ class LocationChange(BaseModel):
 class PuzzleSolved(BaseModel):
     """Represents a puzzle that was solved by the player."""
     puzzle_name: str = Field(description="Name of the puzzle that was solved")
-    answer: str = Field(description="Answer provided by the player")
-    success: bool = Field(description="Whether the answer was correct. Set to true ONLY if the player's answer exactly matches the puzzle's expected answer field (case-insensitive). Set to false if the answer is wrong or doesn't match.")
+    answer: str = Field(description="What the player said or did as their attempt at this puzzle")
+    success: bool = Field(description="Whether the player's attempt actually satisfies the puzzle. Judge by MEANING, not by string equality: set true if what the player said or did accomplishes what the puzzle's expected answer describes (e.g. answer 'Ring the Small Silver Bell' and the player rings the bell). Set false if they said something different, or only asked about the puzzle without attempting it.")
 
 class WorldUpdate(BaseModel):
     moved_objects: List[MovedObject] = Field(default=[], description="List of objects that were moved")

@@ -145,7 +145,7 @@ def prompt_world_update_structured(world_state: str, input: str, language: str =
 REGLAS CRÍTICAS PARA PUZZLES:
 1. **PROPOSICIÓN DE PUZZLES**: Si un personaje tiene la propiedad "proposes_puzzle", el personaje DEBE proponer el puzzle cuando el jugador interactúe con él, ANTES de dar cualquier recompensa.
 1b. **PROPOSICIÓN DE PUZZLES POR OBJETOS**: Si un puzzle tiene la propiedad "proposed_by_location", el puzzle DEBE ser propuesto cuando el jugador interactúe con ese objeto específico o intente desbloquear el pasaje (investigate, examine, look at, etc.).
-2. **RESOLUCIÓN DE PUZZLES**: Si el jugador intenta resolver un puzzle, analiza cuidadosamente si su respuesta es correcta comparándola con la respuesta esperada.
+2. **RESOLUCIÓN DE PUZZLES - SE REQUIERE UN INTENTO REAL**: Solo completa el campo "puzzles_solved" cuando el jugador hace un intento real. Un intento es (a) decir una respuesta ("la respuesta es FUTURO"), o (b) REALIZAR la acción que describe la respuesta del puzzle ("toco la campana", "le entrego la cinta"). Ambos cuentan, y (b) cuenta aunque el jugador nunca escriba el texto de la respuesta. Órdenes genéricas como "resolver [puzzle]" SIN decir ni hacer nada NO son intentos. Cuando haya un intento real, juzga si satisface el puzzle por SIGNIFICADO (ver VALIDACIÓN DE PUZZLES abajo).
 3. **FLEXIBILIDAD EN OBSERVACIÓN**: Para puzzles de observación (`puzzle_type`: "observation"), si la acción del jugador es un intento razonable de encontrar el objeto (p. ej., 'buscar en el escritorio', 'mirar en los libros'), considera el puzzle resuelto aunque no nombre el escondite exacto ('el cajón con fondo falso'). El objetivo es recompensar la exploración lógica.
 4. **REQUISITOS**: Verifica que se cumplan todos los requisitos antes de permitir acciones (objetos necesarios, puzzles resueltos, etc.).
 
@@ -201,20 +201,29 @@ Devuelve un objeto JSON con la siguiente estructura:
 }}
 
 CRÍTICO - VALIDACIÓN DE PUZZLES:
-Cuando el jugador intenta resolver un puzzle, DEBES validar la respuesta:
+Cuando el jugador intenta resolver un puzzle, DEBES juzgar si su intento realmente lo satisface:
 1. Busca el puzzle en el estado del mundo por su nombre exacto
-2. Compara la respuesta del jugador (answer) con el campo "answer" del puzzle
-3. Comparación case-insensitive: convierte ambas a minúsculas antes de comparar
-4. Si coinciden EXACTAMENTE (después de lowercase y trim): success = true
-5. Si NO coinciden: success = false
-6. NUNCA asumas que la respuesta es correcta sin compararla
+2. Lee el campo "answer" del puzzle y determina qué exige realmente
+3. Juzga por SIGNIFICADO, no por igualdad de cadenas. Existen dos tipos de respuesta:
+   - Una respuesta DICHA (la solución de una adivinanza, un nombre, un código). El jugador la
+     satisface diciéndola. Acepta sinónimos, artículos de más o de menos, y diferencias de
+     mayúsculas. Rechaza una palabra genuinamente distinta.
+   - Una ACCIÓN que el jugador debe realizar ("Tocar la campana de plata", "Darle la cinta",
+     "Abrir la puerta del este"). El jugador la satisface HACIENDO esa cosa en su acción, sin
+     importar cómo la exprese. Nunca le exijas escribir la frase literal.
+4. Si el intento satisface el puzzle: success = true. Si no lo satisface: success = false
+5. Si el jugador solo preguntó SOBRE el puzzle sin intentarlo: no incluyas ninguna entrada
 
 Ejemplos de validación:
-- Puzzle answer: "A map", Player: "a map" → success: true ✅ (match case-insensitive)
-- Puzzle answer: "A map", Player: "map" → success: false ❌ (falta artículo)
-- Puzzle answer: "A map", Player: "chart" → success: false ❌ (palabra diferente)
-- Puzzle answer: "Conch, Scallop", Player: "Conch, Scallop" → success: true ✅
-- Puzzle answer: "Conch, Scallop", Player: "Scallop, Conch" → success: false ❌ (orden incorrecto)
+- Puzzle answer: "Un mapa", Player: "un mapa" → success: true ✅ (lo mismo)
+- Puzzle answer: "Un mapa", Player: "mapa" → success: true ✅ (el artículo no importa)
+- Puzzle answer: "Un mapa", Player: "carta náutica" → success: false ❌ (palabra diferente)
+- Puzzle answer: "Tocar la campana de plata", Player: "tomo la campana y la hago sonar para despertarla"
+  → success: true ✅ (el jugador realizó la acción requerida)
+- Puzzle answer: "Tocar la campana de plata", Player: "le grito para que despierte"
+  → success: false ❌ (hizo otra cosa)
+- Puzzle answer: "Caracola, Vieira", Player: "Vieira, Caracola" → success: true ✅ (mismo conjunto)
+- Puzzle answer: "Tocar la campana", Player: "¿cuál es la respuesta del puzzle?" → sin entrada ❌ (no es un intento)
 
 CRÍTICO - PASAJES BLOQUEADOS:
 NO manipules manualmente "blocked_passages_available" para desbloquear pasajes de puzzles. Los pasajes se desbloquean AUTOMÁTICAMENTE cuando:
@@ -234,7 +243,7 @@ IMPORTANTE: Siempre incluye el campo narration con una descripción detallada y 
 CRITICAL RULES FOR PUZZLES:
 1. **PUZZLE PROPOSITION**: If a character has the "proposes_puzzle" property, the character MUST propose the puzzle when the player interacts with them, BEFORE giving any reward. CRITICAL: You MUST include the exact puzzle problem text from the world state in your narration. Check the character's "proposes_puzzle" field, find that puzzle in the world state, and copy its "problem" field verbatim into your narration. Do NOT paraphrase or mention puzzles vaguely - state the actual puzzle problem clearly so the player knows what to solve.
 1b. **PUZZLE PROPOSITION BY ITEMS**: If a puzzle has the "proposed_by_location" property, the puzzle MUST be proposed when the player interacts with that specific item or if they try to unblock the passage it blocks (investigate, examine, look at, etc.). Include the exact puzzle problem text in your narration.
-2. **PUZZLE RESOLUTION - ANSWER REQUIRED**: Only populate the "puzzles_solved" field if the player explicitly provides an answer to the puzzle in their action. Generic commands like "solve [puzzle name]" or "answer the riddle" WITHOUT providing the actual answer should result in narration asking the player to provide their answer, NOT marking the puzzle as solved. The player MUST state their answer explicitly (e.g., "the answer is FUTURE" or "I answer: echo"). Once an answer is provided, analyze if it's correct by comparing it with the expected answer.
+2. **PUZZLE RESOLUTION - AN ACTUAL ATTEMPT IS REQUIRED**: Only populate the "puzzles_solved" field when the player makes a real attempt at the puzzle. An attempt is either (a) stating an answer ("the answer is FUTURE", "I answer: echo"), or (b) PERFORMING the action the puzzle's answer describes ("I ring the bell", "I hand her the ribbon"). Both count, and (b) counts even though the player never typed the answer text. Generic commands like "solve [puzzle name]" or "answer the riddle" WITHOUT stating an answer or doing anything are NOT attempts: narrate asking the player what they want to answer or do, and do not mark the puzzle solved. Once there is a real attempt, judge whether it satisfies the puzzle by MEANING (see PUZZLE VALIDATION below).
 2b. **EXACT PUZZLE NAMES - CRITICAL**: When filling the "puzzles_solved" field, you MUST use the EXACT puzzle name as it appears in the world state. Do NOT modify, add to, or paraphrase the puzzle name. Do NOT add character names or location names to the puzzle name. Example: If the world state shows a puzzle named "Captain's Riddle", use EXACTLY "Captain's Riddle" in puzzles_solved, NOT "Captain Thorne's Riddle" or "The Captain's Riddle". Copy the name character-for-character from the world state.
 3. **FLEXIBILITY IN OBSERVATION**: For observation puzzles (`puzzle_type`: "observation"), if the player's action is a reasonable attempt to find the item (e.g., 'search the desk', 'look through the books'), consider the puzzle solved even if they don't name the exact hiding spot ('the false-bottomed drawer'). The goal is to reward logical exploration.
 4. **REQUIREMENTS**: Verify that all requirements are met before allowing actions (necessary objects, solved puzzles, etc.).
@@ -288,20 +297,29 @@ Return a JSON object with the following structure:
 }}
 
 CRITICAL - PUZZLE VALIDATION:
-When the player attempts to solve a puzzle, you MUST validate their answer:
+When the player attempts a puzzle, you MUST judge whether their attempt actually satisfies it:
 1. Find the puzzle in the world state by its exact name
-2. Compare the player's answer with the puzzle's "answer" field
-3. Case-insensitive comparison: convert both to lowercase before comparing
-4. If they match EXACTLY (after lowercase and trim): success = true
-5. If they DON'T match: success = false
-6. NEVER assume the answer is correct without comparing
+2. Read the puzzle's "answer" field and decide what it actually requires
+3. Judge by MEANING, not by string equality. Two kinds of answer exist:
+   - A SPOKEN answer (a riddle's solution, a name, a code). The player satisfies it by saying
+     it. Accept synonyms, missing or extra articles, and different capitalisation. Reject a
+     genuinely different word.
+   - An ACTION the player must perform ("Ring the silver bell", "Give her the ribbon", "Open
+     the eastern gate"). The player satisfies it by DOING that thing in their action, however
+     they phrase it. Never require them to type the sentence out.
+4. If the attempt satisfies the puzzle: success = true. If it doesn't: success = false
+5. If the player only asked ABOUT the puzzle without attempting it: emit no entry at all
 
 Validation examples:
-- Puzzle answer: "A map", Player: "a map" → success: true ✅ (case-insensitive match)
-- Puzzle answer: "A map", Player: "map" → success: false ❌ (missing article)
+- Puzzle answer: "A map", Player: "a map" → success: true ✅ (same thing)
+- Puzzle answer: "A map", Player: "map" → success: true ✅ (article doesn't matter)
 - Puzzle answer: "A map", Player: "chart" → success: false ❌ (different word)
-- Puzzle answer: "Conch, Scallop", Player: "Conch, Scallop" → success: true ✅
-- Puzzle answer: "Conch, Scallop", Player: "Scallop, Conch" → success: false ❌ (wrong order)
+- Puzzle answer: "Ring the Small Silver Bell", Player: "take the bell and ring it to wake her"
+  → success: true ✅ (the player performed the required action)
+- Puzzle answer: "Ring the Small Silver Bell", Player: "I shout at her to wake up"
+  → success: false ❌ (did something else)
+- Puzzle answer: "Conch, Scallop", Player: "Scallop, Conch" → success: true ✅ (same set)
+- Puzzle answer: "Ring the bell", Player: "what is the answer to the puzzle?" → no entry ❌ (not an attempt)
 
 CRITICAL - BLOCKED PASSAGES:
 DO NOT manually manipulate "blocked_passages_available" to unblock puzzle passages. Passages are unblocked AUTOMATICALLY when:
@@ -1135,6 +1153,37 @@ Objetivo: Conseguir el Amuleto Mágico
 9. **OBSTÁCULO vs. LLAVE**: Sé preciso. Un 'obstáculo' es lo que bloquea el camino (p. ej., 'una puerta cerrada'). El 'requisito' es la llave que lo quita (p. ej., 'una llave de hierro'). La llave nunca es el obstáculo.
 10. **RECOMPENSA DE RECLUTAMIENTO**: Si un personaje tiene `recruitable: true` y su `initial_feeling` es "hostile", "wary" o "neutral", PUEDES añadir un puzzle propuesto por ese mismo personaje (`proposed_by_character`) cuya única recompensa sea un `RecruitCharacterReward` con `character_name` igual al nombre de ese personaje. Esto representa el desafío que el jugador debe superar para reclutarlo. NO añadas este tipo de puzzle para personajes cuyo `initial_feeling` ya sea "friendly" o "devoted" - esos personajes se reclutan directamente sin desafío.
 
+**REGLA OBLIGATORIA - TODO PUZZLE DEBE SER VERIFICABLE:**
+El motor comprueba mecánicamente si un puzzle fue resuelto. Un puzzle cuya única forma de
+resolverse sea que el jugador escriba literalmente el texto de `answer` es INJUGABLE cuando esa
+respuesta describe una acción. Por eso, para CADA puzzle DEBES rellenar al menos uno de estos
+dos campos:
+
+1. **accepted_answers**: si el puzzle se resuelve DICIENDO algo (adivinanza, código, nombre).
+   Incluye variantes válidas: la palabra clave sola, con y sin artículo, sinónimos evidentes.
+   Ejemplo → answer: "Una llave de hierro", accepted_answers: ["llave de hierro", "la llave", "llave"]
+
+2. **solution_conditions**: si el puzzle se resuelve HACIENDO algo. Son condiciones sobre el
+   estado del mundo que el motor verifica solo. TODAS deben cumplirse para dar el puzzle por
+   resuelto. Tipos disponibles:
+   - `has_item` (item_name): el jugador lleva ese objeto
+   - `item_given_to_character` (item_name, character_name): ese personaje tiene el objeto
+   - `item_in_location` (item_name, location_name): el objeto está en ese lugar
+   - `player_at_location` (location_name): el jugador está en ese lugar
+   - `talked_to_character` (character_name): el jugador interactuó con ese personaje
+
+   Ejemplo → answer: "Tocar la Campana de Plata para despertar a la Reina"
+   ```json
+   "solution_conditions": [
+     {{"condition_type": "has_item", "item_name": "Campana de Plata", "description": "El jugador lleva la Campana de Plata"}},
+     {{"condition_type": "talked_to_character", "character_name": "La Reina de los Gatos", "description": "El jugador interactuó con la Reina"}}
+   ]
+   ```
+
+**NUNCA** dejes `accepted_answers` y `solution_conditions` ambos vacíos. Si dudas de qué tipo es
+el puzzle, rellena los dos. Todo nombre de objeto, personaje o ubicación citado en una condición
+DEBE existir en el mundo y escribirse EXACTAMENTE igual que en el mundo.
+
 **REGLAS OBLIGATORIAS PARA SISTEMA DE PISTAS:**
 Para CADA puzzle que añadas, DEBES incluir:
 1. **puzzle_hints**: Lista de 3-5 pistas progresivas (de general a específica) para resolver el puzzle
@@ -1231,6 +1280,36 @@ Objective: Obtain the Magic Amulet
 - **NO CRAFTING**: The game engine does not support crafting or transforming items. Do not create puzzles that require the player to combine or alter items (e.g., using a recipe to make a potion). Rewards must be items that can be used directly.
 - **OBSTACLE vs. KEY**: Be precise. An 'obstacle' is the thing blocking the way (e.g., 'a locked door'). The 'requirement' is the key that removes it (e.g., 'an iron key'). The key is never the obstacle.
 - **RECRUITMENT REWARD**: If a character has `recruitable: true` and their `initial_feeling` is "hostile", "wary", or "neutral", you MAY add a puzzle proposed by that same character (`proposed_by_character`) whose only reward is a `RecruitCharacterReward` with `character_name` equal to that character's name. This represents the challenge the player must complete to recruit them. Do NOT add this kind of puzzle for characters whose `initial_feeling` is already "friendly" or "devoted" - those characters can be recruited directly without a challenge.
+
+**MANDATORY RULE - EVERY PUZZLE MUST BE VERIFIABLE:**
+The engine mechanically checks whether a puzzle was solved. A puzzle whose only route to being
+solved is the player typing the text of `answer` verbatim is UNPLAYABLE whenever that answer
+describes an action. So for EACH puzzle you MUST fill in at least one of these two fields:
+
+1. **accepted_answers**: for puzzles solved by SAYING something (riddle, code, name). Include
+   the valid variants: the bare keyword, with and without an article, obvious synonyms.
+   Example → answer: "An iron key", accepted_answers: ["iron key", "the key", "key"]
+
+2. **solution_conditions**: for puzzles solved by DOING something. These are world-state
+   conditions the engine verifies by itself. ALL of them must hold for the puzzle to count as
+   solved. Available types:
+   - `has_item` (item_name): the player is carrying that item
+   - `item_given_to_character` (item_name, character_name): that character holds the item
+   - `item_in_location` (item_name, location_name): the item sits in that location
+   - `player_at_location` (location_name): the player is standing in that location
+   - `talked_to_character` (character_name): the player has interacted with that character
+
+   Example → answer: "Ring the Small Silver Bell to wake the Queen"
+   ```json
+   "solution_conditions": [
+     {{"condition_type": "has_item", "item_name": "Small Silver Bell", "description": "The player is carrying the Small Silver Bell"}},
+     {{"condition_type": "talked_to_character", "character_name": "The Queen of Cats", "description": "The player has interacted with the Queen"}}
+   ]
+   ```
+
+**NEVER** leave both `accepted_answers` and `solution_conditions` empty. If you are unsure which
+kind of puzzle it is, fill in both. Every item, character, or location named in a condition MUST
+exist in the world and be spelled EXACTLY as it appears there.
 
 **MANDATORY RULES FOR HINT SYSTEM:**
 For EACH puzzle you add, YOU MUST include:

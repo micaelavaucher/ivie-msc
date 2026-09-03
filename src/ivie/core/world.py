@@ -7,7 +7,7 @@ and methods to update according to the detected changes by a language model.
 import re
 from typing import Type
 
-from ..llm.structured_data_models import FeelingLevel, RelationshipTag
+from ..llm.structured_data_models import FeelingLevel, PuzzleConditionType, RelationshipTag
 
 
 FEELING_ORDER = [FeelingLevel.HOSTILE, FeelingLevel.WARY, FeelingLevel.NEUTRAL, FeelingLevel.FRIENDLY, FeelingLevel.DEVOTED]
@@ -79,11 +79,12 @@ class MysteryObjective:
 class Puzzle (Component):
   """A class to represent a Puzzle"""
 
-  def __init__(self, name: str, descriptions: 'list[str]', problem: str, answer: str, 
-               puzzle_type: str = "riddle", proposed_by_character: str = None, 
-               proposed_by_location: str = None, rewards: list = None, 
-               relevance_to_objective: str = None, puzzle_hints: 'list[dict]' = None, interaction_hint: str = None):
-    
+  def __init__(self, name: str, descriptions: 'list[str]', problem: str, answer: str,
+               puzzle_type: str = "riddle", proposed_by_character: str = None,
+               proposed_by_location: str = None, rewards: list = None,
+               relevance_to_objective: str = None, puzzle_hints: 'list[dict]' = None, interaction_hint: str = None,
+               accepted_answers: 'list[str]' = None, solution_conditions: list = None):
+
     super().__init__(name, descriptions)
     """inherited from Component"""
 
@@ -92,7 +93,13 @@ class Puzzle (Component):
 
     self.answer = answer
     """a possible answer to the riddle or puzzle"""
-    
+
+    self.accepted_answers = accepted_answers or []
+    """alternative phrasings of `answer` that are also accepted when the player says them"""
+
+    self.solution_conditions = solution_conditions or []
+    """PuzzleSolutionCondition list the engine checks against world state; ALL must hold to solve"""
+
     self.puzzle_type = puzzle_type
     """type of puzzle (riddle, logic, sequence, etc.)"""
     
@@ -291,6 +298,12 @@ class World:
 
     self.npc_relationships = []
     """list of NPCRelationship: sparse, symmetric rival/ally tags between characters"""
+
+    self.interacted_characters = set()
+    """names of characters the player has interacted with, used by TALKED_TO_CHARACTER conditions"""
+
+    self.pending_recruitment_offer = None
+    """name of a character who has offered to join the party and is awaiting the player's yes/no"""
 
   ## Deprecated ##
   def set_objective (self, first_component: Type[Component], second_component: Type[Component]):
@@ -544,6 +557,145 @@ class World:
       step = 1 if relationship.tag == RelationshipTag.ALLY else -1
       other.feeling = shift_feeling(getattr(other, 'feeling', FeelingLevel.NEUTRAL), step)
 
+  def record_interaction(self, character_name: str) -> None:
+    """Remember that the player has interacted with a character, for TALKED_TO_CHARACTER conditions.
+
+    setdefault-style guard: a World decoded from a pre-conditions trace has no
+    interacted_characters attribute, since jsonpickle restores __dict__ without calling __init__.
+    """
+    if not hasattr(self, 'interacted_characters'):
+      self.interacted_characters = set()
+    self.interacted_characters.add(character_name)
+
+  def _condition_satisfied(self, condition) -> bool:
+    """Check one PuzzleSolutionCondition against the current world state.
+
+    Name lookups are case- and whitespace-insensitive because the generating LLM routinely
+    drifts on articles and capitalisation ('the silver bell' vs 'Small Silver Bell'), and a
+    condition that can never match would resurrect exactly the unsolvable-puzzle bug this
+    whole mechanism exists to remove.
+    """
+    condition_type = getattr(condition, 'condition_type', None)
+    condition_type = condition_type.value if hasattr(condition_type, 'value') else str(condition_type)
+
+    item_name = getattr(condition, 'item_name', None)
+    character_name = getattr(condition, 'character_name', None)
+    location_name = getattr(condition, 'location_name', None)
+
+    if condition_type == PuzzleConditionType.HAS_ITEM.value:
+      item = self._find_item_case_insensitive(item_name) if item_name else None
+      return item is not None and item in self.player.inventory
+
+    if condition_type == PuzzleConditionType.ITEM_GIVEN_TO_CHARACTER.value:
+      item = self._find_item_case_insensitive(item_name) if item_name else None
+      character = self._find_character_case_insensitive(character_name) if character_name else None
+      return item is not None and character is not None and item in character.inventory
+
+    if condition_type == PuzzleConditionType.ITEM_IN_LOCATION.value:
+      item = self._find_item_case_insensitive(item_name) if item_name else None
+      location = self._find_location_case_insensitive(location_name) if location_name else None
+      return item is not None and location is not None and item in location.items
+
+    if condition_type == PuzzleConditionType.PLAYER_AT_LOCATION.value:
+      location = self._find_location_case_insensitive(location_name) if location_name else None
+      return location is not None and self.player.location is location
+
+    if condition_type == PuzzleConditionType.TALKED_TO_CHARACTER.value:
+      character = self._find_character_case_insensitive(character_name) if character_name else None
+      if character is None:
+        return False
+      interacted = getattr(self, 'interacted_characters', set())
+      return any(name.strip().lower() == character.name.strip().lower() for name in interacted)
+
+    print(f"⚠️ Unknown puzzle condition type '{condition_type}' - treating as unsatisfied")
+    return False
+
+  def puzzle_conditions_satisfied(self, puzzle: 'Puzzle') -> bool:
+    """True when a puzzle declares engine-checkable conditions and every one of them holds."""
+    conditions = getattr(puzzle, 'solution_conditions', None) or []
+    if not conditions:
+      return False
+    return all(self._condition_satisfied(condition) for condition in conditions)
+
+  def check_puzzle_conditions(self) -> 'list[str]':
+    """Solve any already-proposed puzzle whose world-state conditions now hold.
+
+    This is the deterministic half of puzzle verification: it runs after the turn's world
+    update has been applied, so a player who ACTS out the solution ('take the bell and ring
+    it') solves the puzzle even when they never utter its answer text. Returns the names of
+    the puzzles newly solved this call.
+    """
+    newly_solved = []
+    for puzzle_name, puzzle in self.puzzles.items():
+      if self.puzzle_states.get(puzzle_name) != 'proposed':
+        continue
+      if not self.puzzle_conditions_satisfied(puzzle):
+        continue
+
+      self._apply_puzzle_rewards(puzzle)
+      self.puzzle_states[puzzle_name] = 'solved'
+      self._unblock_passages_for_solved_puzzle(puzzle_name, puzzle)
+      self._queue_recruitment_offer_for_puzzle(puzzle)
+      newly_solved.append(puzzle_name)
+      print(f"✅ Puzzle '{puzzle_name}' solved by satisfying its world-state conditions")
+
+    return newly_solved
+
+  def _queue_recruitment_offer_for_puzzle(self, puzzle: 'Puzzle') -> None:
+    """After a puzzle is solved, let the character behind it offer to join the party.
+
+    Solving never recruits on its own - it only queues the offer, so the player still gets
+    the explicit yes/no choice. A RecruitCharacterReward names its beneficiary directly;
+    otherwise the offer comes from whichever character proposed the puzzle.
+    """
+    candidate_name = None
+    for reward in getattr(puzzle, 'rewards', []) or []:
+      if self._normalized_reward_type(reward) == 'recruit_character' and getattr(reward, 'character_name', None):
+        candidate_name = reward.character_name
+        break
+
+    if candidate_name is None:
+      candidate_name = getattr(puzzle, 'proposed_by_character', None)
+    if not candidate_name:
+      return
+
+    character = self._find_character_case_insensitive(candidate_name)
+    if character is None or getattr(character, 'recruited', False):
+      return
+
+    # Solving this character's puzzle is itself the proof of worth, so an NPC who was never
+    # flagged recruitable at generation time becomes recruitable here rather than offering
+    # to join and then being refused by can_recruit.
+    character.recruitable = True
+    if not getattr(character, 'recruitment_puzzle', None):
+      character.recruitment_puzzle = puzzle.name
+
+    self.pending_recruitment_offer = character.name
+    print(f"🤝 {character.name} is offering to join the party after '{puzzle.name}'")
+
+  def accept_pending_recruitment(self) -> 'Character':
+    """Recruit the character whose offer is pending. Returns them, or None if there was no offer."""
+    character_name = getattr(self, 'pending_recruitment_offer', None)
+    if not character_name:
+      return None
+
+    self.pending_recruitment_offer = None
+    character = self.characters.get(character_name)
+    if character is None:
+      return None
+
+    self.recruit_character(character_name)
+    return character
+
+  def decline_pending_recruitment(self) -> 'Character':
+    """Clear a pending offer without recruiting. Returns the declined character, or None."""
+    character_name = getattr(self, 'pending_recruitment_offer', None)
+    if not character_name:
+      return None
+
+    self.pending_recruitment_offer = None
+    return self.characters.get(character_name)
+
   def render_world(self, *, language:str = 'en', detail_components:bool = True) -> str:
     rendered_world = ''
 
@@ -559,6 +711,10 @@ class World:
     reachable_locations = [f"**{p.name}**" for p in player_location.connecting_locations]
     blocked_passages = [f"**{p}**" for p in player_location.blocked_locations.keys()]
     characters_in_the_scene = [character for character in self.characters.values() if character.location is player_location]
+    # getattr: a Character decoded via jsonpickle from a pre-recruitment trace has no
+    # `recruited` in its __dict__, since jsonpickle restores state without calling __init__.
+    party_members = [character for character in self.characters.values() if getattr(character, 'recruited', False)]
+    pending_offer = getattr(self, 'pending_recruitment_offer', None)
 
     # Categorize items by their current holder/location
     location_items = list(player_location.items)  # Items free in the location
@@ -602,6 +758,15 @@ class World:
       # Characters present
       if characters_in_the_scene:
         formatted_state += f"👥 **Personajes presentes:** {', '.join([f'**{c.name}**' for c in characters_in_the_scene])}\n"
+
+      # Party members
+      if party_members:
+        formatted_state += f"🤝 **Personajes en tu grupo:** {', '.join([f'**{c.name}**' for c in party_members])}\n"
+      else:
+        formatted_state += f"🤝 **Personajes en tu grupo:** Nadie\n"
+
+      if pending_offer:
+        formatted_state += f"❓ **{pending_offer}** espera tu respuesta para unirse a tu grupo (responde **sí** o **no**)\n"
     else:
       formatted_state = f"📍 **Current location:** {player_location.name}\n"
       
@@ -635,6 +800,15 @@ class World:
       # Characters present
       if characters_in_the_scene:
         formatted_state += f"👥 **Characters present:** {', '.join([f'**{c.name}**' for c in characters_in_the_scene])}\n"
+
+      # Party members
+      if party_members:
+        formatted_state += f"🤝 **Characters in your party:** {', '.join([f'**{c.name}**' for c in party_members])}\n"
+      else:
+        formatted_state += f"🤝 **Characters in your party:** Nobody\n"
+
+      if pending_offer:
+        formatted_state += f"❓ **{pending_offer}** is waiting for your answer about joining your party (say **yes** or **no**)\n"
 
     return formatted_state
   
@@ -1152,7 +1326,10 @@ class World:
     for puzzle_solution in world_update.puzzles_solved:
       try:
         if puzzle_solution.success:
-          success = self.solve_puzzle(puzzle_solution.puzzle_name, puzzle_solution.answer)
+          # llm_verified: the narrator already judged that the player's attempt satisfies the
+          # puzzle by meaning. That judgement is the fallback path for action puzzles whose
+          # `answer` is prose ("Ring the Small Silver Bell") that no player types verbatim.
+          success = self.solve_puzzle(puzzle_solution.puzzle_name, puzzle_solution.answer, llm_verified=True)
           if success:
             print(f"✅ Puzzle {puzzle_solution.puzzle_name} solved successfully!")
             # Update hints after solving a puzzle - player may now need different hints
@@ -1208,6 +1385,18 @@ class World:
             # Add discovery message to narration
             world_update.narration += clue_discovery
 
+    # Record which co-located characters the player engaged with this turn, so that
+    # TALKED_TO_CHARACTER conditions have something to check against. A character named in
+    # the turn's narration while standing in the player's location was, for our purposes,
+    # interacted with - the same narration-scanning heuristic already used for items above.
+    if hasattr(world_update, 'narration') and world_update.narration:
+      narration_lower = world_update.narration.lower()
+      for character in self.characters.values():
+        if character is self.player or character.location is not self.player.location:
+          continue
+        if character.name.lower() in narration_lower:
+          self.record_interaction(character.name)
+
     # Check if any puzzle problem is mentioned in the narration (indicates puzzle was presented)
     if hasattr(world_update, 'narration') and world_update.narration:
       narration_lower = world_update.narration.lower()
@@ -1218,9 +1407,20 @@ class World:
           # Look for significant portions of the puzzle problem (at least 10 characters)
           if len(puzzle_problem_lower) >= 10 and puzzle_problem_lower in narration_lower:
             print(f"🧩 Puzzle problem detected in narration: {puzzle_name}")
+            # The narrator just put this challenge to the player, so record it as proposed.
+            # Without this, a puzzle introduced purely through narration would stay
+            # 'not_proposed' forever and check_puzzle_conditions would never consider it.
+            if self.puzzle_states.get(puzzle_name) == 'not_proposed':
+              self.puzzle_states[puzzle_name] = 'proposed'
             # Update hints to focus on this specific puzzle
             self.update_hints_for_puzzle_activity(puzzle_name)
             break  # Only update for the first puzzle found to avoid conflicts
+
+    # Deterministic pass last: the player may have ACTED out a puzzle's solution this turn
+    # (taken the required item, handed it over, reached the place) without ever stating an
+    # answer, in which case the narrator emits no puzzles_solved entry at all. Run after every
+    # other mutation above so conditions are checked against the settled world state.
+    self.check_puzzle_conditions()
 
   def update (self, updates: str) -> None:
     self.parse_moved_objects(updates)
@@ -1241,6 +1441,15 @@ class World:
           clue_discovery = self._check_mystery_clue_discovery(item_name, 'en')  # Default to English for legacy
           if clue_discovery:
             print(clue_discovery)
+
+    # Same deterministic pass as update_from_structured: the legacy text path is what runs
+    # whenever structured processing fails, so puzzle conditions must be checked here too or
+    # a fallback turn would silently drop a solution the player acted out.
+    for character in self.characters.values():
+      if character is not self.player and character.location is self.player.location:
+        if character.name.lower() in updates.lower():
+          self.record_interaction(character.name)
+    self.check_puzzle_conditions()
 
   def parse_moved_objects (self, updates: str) -> None:
     parsed_objects = re.findall(r".*Moved object:\s*(.+)",updates)
@@ -1359,11 +1568,21 @@ class World:
       answer = ' '.join(answer.split())
       return answer
 
-  def solve_puzzle(self, puzzle_name: str, answer: str) -> bool:
+  def solve_puzzle(self, puzzle_name: str, answer: str, llm_verified: bool = False) -> bool:
+      """Verify and, if verified, resolve a puzzle.
+
+      A puzzle counts as solved through any ONE of three independent paths, so that no
+      generated puzzle can end up unverifiable:
+        1. its engine-checkable solution_conditions all hold in the current world state;
+        2. the player's text matches `answer` or any of `accepted_answers` once normalized;
+        3. the reasoning model judged the player's attempt to satisfy the puzzle
+           (llm_verified) - the semantic fallback for action puzzles whose `answer` is prose
+           the player would never type verbatim.
+      """
       # Try exact match first
       puzzle = None
       actual_puzzle_name = None
-      
+
       if puzzle_name in self.puzzles:
           puzzle = self.puzzles[puzzle_name]
           actual_puzzle_name = puzzle_name
@@ -1385,42 +1604,69 @@ class World:
           print(f"❌ Puzzle not found: '{puzzle_name}'. Available puzzles: {list(self.puzzles.keys())}")
           return False
       
-      # Normalize both answers for flexible comparison
-      correct_answer_norm = self.normalize_answer(puzzle.answer)
-      user_answer_norm = self.normalize_answer(answer)
-      
+      # Normalize every accepted phrasing for flexible comparison
+      accepted_norms = [self.normalize_answer(puzzle.answer)]
+      accepted_norms += [self.normalize_answer(a) for a in (getattr(puzzle, 'accepted_answers', None) or [])]
+      user_answer_norm = self.normalize_answer(answer or "")
+
       print(f"🔍 Puzzle validation: '{puzzle_name}'")
-      print(f"   Expected (normalized): '{correct_answer_norm}'")
+      print(f"   Accepted (normalized): {accepted_norms}")
       print(f"   Player (normalized): '{user_answer_norm}'")
-      
-      if correct_answer_norm == user_answer_norm:
+
+      conditions_ok = self.puzzle_conditions_satisfied(puzzle)
+      text_ok = bool(user_answer_norm) and user_answer_norm in accepted_norms
+
+      if conditions_ok:
+          print(f"   ✔️ Solved via world-state conditions")
+      elif text_ok:
+          print(f"   ✔️ Solved via answer text")
+      elif llm_verified:
+          print(f"   ✔️ Solved via narrator's semantic judgement of the player's attempt")
+
+      if conditions_ok or text_ok or llm_verified:
           # Apply rewards
           self._apply_puzzle_rewards(puzzle)
           # Mark puzzle as solved (use actual puzzle name from world)
           self.puzzle_states[actual_puzzle_name] = 'solved'
           print(f"✅ Puzzle state updated: puzzle_states['{actual_puzzle_name}'] = 'solved'")
-          
+
           # Automatically unblock passages that are blocked by this puzzle
           self._unblock_passages_for_solved_puzzle(actual_puzzle_name, puzzle)
-          
+
+          # Let whoever set this challenge offer to join the party
+          self._queue_recruitment_offer_for_puzzle(puzzle)
+
           return True
-      
-      print(f"❌ Answer mismatch: '{user_answer_norm}' != '{correct_answer_norm}'")
+
+      print(f"❌ Attempt rejected: '{user_answer_norm}' matches no accepted answer and no conditions hold")
       return False
+
+  def _normalized_reward_type(self, reward) -> str:
+      """Return a reward's type as a lowercase string.
+
+      RewardType is a str Enum whose members are lowercase ('item', 'passage'), but rewards
+      restored from a jsonpickle trace arrive as plain strings that may carry either casing.
+      Normalizing here keeps the comparisons below from silently matching nothing - which is
+      what previously stopped puzzle rewards from ever being handed out.
+      """
+      reward_type = getattr(reward, 'reward_type', None)
+      reward_type = reward_type.value if hasattr(reward_type, 'value') else str(reward_type)
+      return reward_type.lower()
 
   def _apply_puzzle_rewards(self, puzzle: 'Puzzle'):
       for reward in puzzle.rewards:
           try:
               if hasattr(reward, 'reward_type'):
+                  reward_type = self._normalized_reward_type(reward)
                   # Special handling for observation puzzles where the reward is finding the item
-                  if puzzle.puzzle_type == "observation" and reward.reward_type == "ITEM":
+                  if puzzle.puzzle_type == "observation" and reward_type == "item":
                       item = self._find_item_case_insensitive(reward.item_name)
                       if item and item in self.player.location.items:
                           self.player.save_item(item, self.player.location)
                           print(f"[INFO] Player found observation reward item '{item.name}' in location.")
                           continue # Move to next reward
 
-                  if reward.reward_type == "ITEM" and hasattr(reward, 'item_name'):
+                  if reward_type == "item" and hasattr(reward, 'item_name'):
                       # Give item to player - case insensitive search
                       item = self._find_item_case_insensitive(reward.item_name)
                       if item:
@@ -1441,7 +1687,7 @@ class World:
                                       # No need to set owner_found=True, as we break immediately
                                       break # Exit location loop once found and transferred
                   
-                  elif reward.reward_type == "PASSAGE" and hasattr(reward, 'from_location') and hasattr(reward, 'to_location'):
+                  elif reward_type == "passage" and hasattr(reward, 'from_location') and hasattr(reward, 'to_location'):
                       # Unblock passage - case insensitive search
                       from_loc = self._find_location_case_insensitive(reward.from_location)
                       to_loc = self._find_location_case_insensitive(reward.to_location)
@@ -1454,6 +1700,21 @@ class World:
       for name, item in self.items.items():
           if name.lower() == item_name.lower():
               return item
+      return None
+
+  def _find_character_case_insensitive(self, character_name: str) -> 'Character':
+      if not character_name:
+          return None
+      target = character_name.strip().lower()
+      for name, character in self.characters.items():
+          if name.strip().lower() == target:
+              return character
+      # Fall back to a containment match: generated conditions often name a character as
+      # 'the Queen' where the world knows them as 'The Queen of Cats'.
+      for name, character in self.characters.items():
+          normalized = name.strip().lower()
+          if target in normalized or normalized in target:
+              return character
       return None
 
   def find_puzzle_proposed_by_location(self, item_name: str):

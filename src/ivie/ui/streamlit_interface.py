@@ -816,7 +816,7 @@ def render_world_inspection(world):
             st.session_state.inspecting_world = False
             
             config = load_config()
-            narrative_model_name = config.get('Models', 'NarrativeModel', fallback='gemini-2.5-flash')
+            narrative_model_name = config.get('Models', 'NarrativeModel', fallback='gemini-3.5-flash')
             narrative_model = get_llm(narrative_model_name)
             
             starting_narration = generate_starting_narration(
@@ -946,7 +946,7 @@ def load_replay_world(world_id: str):
             st.session_state.current_inspiration = trace_data.get('inspiration', "")
             
             config = load_config()
-            narrative_model_name = config.get('Models', 'NarrativeModel', fallback='gemini-2.5-flash')
+            narrative_model_name = config.get('Models', 'NarrativeModel', fallback='gemini-3.5-flash')
             narrative_model = get_llm(narrative_model_name)
             
             starting_narration = generate_starting_narration(
@@ -1220,7 +1220,9 @@ def render_chat_interface():
                 ("📋 Inventario", "inventario"),
                 ("🔍 Inspeccionar", "inspeccionar mundo"),
                 ("🗺️ Resumen", "resumen mundo"),
-                ("📍 Ubicación", "¿dónde estoy?")
+                ("📍 Ubicación", "¿dónde estoy?"),
+                ("🤝 NPCs", "lista npcs"),
+                ("🧩 Puzzles", "lista puzzles")
             ]
         else:
             quick_actions = [
@@ -1229,7 +1231,9 @@ def render_chat_interface():
                 ("📋 Inventory", "inventory"),
                 ("🔍 Inspect World", "inspect world"),
                 ("🗺️ Overview", "world overview"),
-                ("📍 Location", "where am I?")
+                ("📍 Location", "where am I?"),
+                ("🤝 NPCs", "npc list"),
+                ("🧩 Puzzles", "puzzle list")
             ]
     else:
         # Normal mode: only basic actions
@@ -1252,14 +1256,12 @@ def render_chat_interface():
     
     # Create buttons for quick actions with better spacing
     if st.session_state.debug_mode:
-        # Debug mode: use 2 centered rows of 3 columns each with left margin
-        # First row
-        col_margin1, col1, col2, col3 = st.columns([0.20, 0.32, 0.32, 0.32])
-        # Second row  
-        col_margin2, col4, col5, col6 = st.columns([0.20, 0.32, 0.32, 0.32])
-        
-        cols = [col1, col2, col3, col4, col5, col6]
-        
+        # Debug mode: rows of 3 columns each, built from however many actions there are
+        cols = []
+        for _ in range((len(quick_actions) + 2) // 3):
+            row = st.columns([0.20, 0.32, 0.32, 0.32])
+            cols.extend(row[1:])  # row[0] is the left margin
+
         for i, (button_text, command_text) in enumerate(quick_actions):
             with cols[i]:
                 if st.button(button_text, key=f"quick_action_{i}", help=f"Send: {command_text}"):

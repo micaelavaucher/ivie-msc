@@ -9,10 +9,19 @@ from ..llm.structured_data_models import GeneratedWorld, WorldExpansion, Recruit
 
 
 def _find_recruitment_puzzle_for_character(character_name: str, puzzles_dict: Dict[str, Puzzle]) -> str:
+    """Find the puzzle that gates recruiting this character.
+
+    A RecruitCharacterReward naming them wins; otherwise any puzzle they propose serves as
+    their challenge, since solving a character's puzzle is what earns their party invitation.
+    """
     for puzzle in puzzles_dict.values():
         for reward in puzzle.rewards:
             if isinstance(reward, RecruitCharacterReward) and reward.character_name == character_name:
                 return puzzle.name
+
+    for puzzle in puzzles_dict.values():
+        if puzzle.proposed_by_character == character_name:
+            return puzzle.name
     return None
 
 
@@ -76,6 +85,8 @@ def create_world_from_llm_response(world_data) -> World:
                 relevance_to_objective=getattr(puzzle_data, 'relevance_to_objective', None),
                 puzzle_hints=getattr(puzzle_data, 'puzzle_hints', []),
                 interaction_hint=getattr(puzzle_data, 'interaction_hint', None),
+                accepted_answers=getattr(puzzle_data, 'accepted_answers', []),
+                solution_conditions=getattr(puzzle_data, 'solution_conditions', []),
             )
             puzzles_dict[puzzle_data.name] = puzzle
 
@@ -141,12 +152,17 @@ def create_world_from_llm_response(world_data) -> World:
         for char_data in generated_world.characters:
             char_inventory = [items_dict[item_name] for item_name in getattr(char_data, 'inventory', []) if item_name in items_dict]
             char_location = locations_dict.get(getattr(char_data, 'location', None), player_location)
+            recruitment_puzzle = _find_recruitment_puzzle_for_character(char_data.name, puzzles_dict)
+            # A character who sets the player a challenge is recruitable by definition: passing
+            # their test is what earns the invitation, so they don't need the generator to have
+            # remembered to flag them.
+            recruitable = getattr(char_data, 'recruitable', False) or recruitment_puzzle is not None
             character = Character(
                 name=char_data.name, descriptions=char_data.descriptions, location=char_location,
                 inventory=char_inventory, interaction=getattr(char_data, 'interaction', None),
-                recruitable=getattr(char_data, 'recruitable', False),
+                recruitable=recruitable,
                 feeling=getattr(char_data, 'initial_feeling', FeelingLevel.NEUTRAL),
-                recruitment_puzzle=_find_recruitment_puzzle_for_character(char_data.name, puzzles_dict),
+                recruitment_puzzle=recruitment_puzzle,
             )
             characters_list.append(character)
 
@@ -403,20 +419,189 @@ def generate_world_overview(world: World, language: str = 'es') -> str:
 
     npc_count = len([c for c in world.characters.values() if c != world.player])
 
+    # getattr defaults throughout: a World/Character restored by jsonpickle from a trace
+    # recorded before recruitment existed has none of these attributes.
+    npcs = [c for c in world.characters.values() if c != world.player]
+    recruitable_count = len([c for c in npcs if getattr(c, 'recruitable', False)])
+    party = [c.name for c in npcs if getattr(c, 'recruited', False)]
+    solved_count = len([state for state in getattr(world, 'puzzle_states', {}).values() if state == 'solved'])
+
     if language == 'es':
         overview = "📊 **RESUMEN DEL MUNDO** 📊\n\n"
         overview += f"🏠 **Ubicaciones:** {len(world.locations)}\n"
         overview += f"📦 **Objetos:** {len(world.items)}\n"
-        overview += f"👤 **Personajes (NPCs):** {npc_count}\n"
-        overview += f"🧩 **Puzzles:** {puzzles_count}\n\n"
+        overview += f"👤 **Personajes (NPCs):** {npc_count} ({recruitable_count} reclutables)\n"
+        overview += f"🧩 **Puzzles:** {puzzles_count} ({solved_count} resueltos)\n"
+        overview += f"🤝 **Grupo:** {', '.join(party) if party else 'Nadie'}\n\n"
     else:
         overview = "📊 **WORLD OVERVIEW** 📊\n\n"
         overview += f"🏠 **Locations:** {len(world.locations)}\n"
         overview += f"📦 **Objects:** {len(world.items)}\n"
-        overview += f"👤 **Characters (NPCs):** {npc_count}\n"
-        overview += f"🧩 **Puzzles:** {puzzles_count}\n\n"
+        overview += f"👤 **Characters (NPCs):** {npc_count} ({recruitable_count} recruitable)\n"
+        overview += f"🧩 **Puzzles:** {puzzles_count} ({solved_count} solved)\n"
+        overview += f"🤝 **Party:** {', '.join(party) if party else 'Nobody'}\n\n"
 
     return overview
+
+
+FEELING_ICONS = {
+    'hostile': '💢',
+    'wary': '😒',
+    'neutral': '😐',
+    'friendly': '🙂',
+    'devoted': '💖',
+}
+
+PUZZLE_STATE_ICONS = {
+    'not_proposed': '⚪',
+    'proposed': '🟡',
+    'solved': '✅',
+}
+
+
+def _enum_value(value) -> str:
+    """Enum members and jsonpickle-restored plain strings both reach these reports."""
+    return value.value if hasattr(value, 'value') else str(value)
+
+
+def generate_npc_debug_report(world: World, language: str = 'es') -> str:
+    """Debug view of every NPC's recruitment state: feeling, challenge, party membership,
+    relationships, and exactly why they can or cannot be recruited right now."""
+    from ..config import load_config, get_recruitment_config
+
+    try:
+        enabled, threshold = get_recruitment_config(load_config())
+    except (KeyError, ValueError):
+        enabled, threshold = True, FeelingLevel.FRIENDLY
+
+    npcs = [c for c in world.characters.values() if c is not world.player]
+    interacted = {name.strip().lower() for name in getattr(world, 'interacted_characters', set())}
+    pending_offer = getattr(world, 'pending_recruitment_offer', None)
+    es = language == 'es'
+
+    report = "🤝 **NPCs Y RECLUTAMIENTO** 🤝\n\n" if es else "🤝 **NPCs & RECRUITMENT** 🤝\n\n"
+    report += (f"⚙️ {'Reclutamiento' if es else 'Recruitment'}: "
+               f"{'✅ on' if enabled else '❌ off'} · "
+               f"{'umbral' if es else 'threshold'} `{_enum_value(threshold)}`\n")
+    if pending_offer:
+        report += f"❓ **{pending_offer}** {'espera tu sí/no' if es else 'is awaiting your yes/no'}\n"
+    report += "\n"
+
+    if not npcs:
+        report += "_Sin NPCs._\n" if es else "_No NPCs._\n"
+        return report
+
+    for character in npcs:
+        feeling = _enum_value(getattr(character, 'feeling', FeelingLevel.NEUTRAL))
+        recruitable = getattr(character, 'recruitable', False)
+        recruited = getattr(character, 'recruited', False)
+        puzzle_name = getattr(character, 'recruitment_puzzle', None)
+        puzzle_state = world.puzzle_states.get(puzzle_name) if puzzle_name else None
+        location_name = character.location.name if character.location else '—'
+
+        badge = ('🎒 EN EL GRUPO' if es else '🎒 IN PARTY') if recruited else ''
+        report += f"### {character.name} {badge}\n"
+        report += (f"{FEELING_ICONS.get(feeling, '❔')} {'Sentimiento' if es else 'Feeling'}: "
+                   f"`{feeling}` · 📍 {location_name}\n")
+        report += (f"{'✅' if recruitable else '❌'} {'reclutable' if es else 'recruitable'} · "
+                   f"{'✅' if recruited else '⬜'} {'reclutado' if es else 'recruited'} · "
+                   f"{'✅' if character.name.strip().lower() in interacted else '⬜'} "
+                   f"{'interactuado' if es else 'talked to'}\n")
+
+        if puzzle_name:
+            icon = PUZZLE_STATE_ICONS.get(puzzle_state, '❔')
+            report += (f"🧩 {'Desafío' if es else 'Challenge'}: **{puzzle_name}** "
+                       f"{icon} `{puzzle_state or 'unknown'}`\n")
+        else:
+            report += f"🧩 {'Sin desafío de reclutamiento' if es else 'No recruitment challenge'}\n"
+
+        proposes = getattr(getattr(character, 'interaction', None), 'proposes_puzzle', None)
+        if proposes and proposes != puzzle_name:
+            report += f"💬 {'Propone puzzle' if es else 'Proposes puzzle'}: {proposes}\n"
+
+        relationships = [r for r in getattr(world, 'npc_relationships', [])
+                         if character.name in (r.character_a, r.character_b)]
+        if relationships:
+            rendered = []
+            for relationship in relationships:
+                other = relationship.character_b if relationship.character_a == character.name else relationship.character_a
+                tag = _enum_value(relationship.tag)
+                rendered.append(f"{'🤜' if tag == 'rival' else '🫱'} {tag} → {other}")
+            report += f"🔗 {' · '.join(rendered)}\n"
+
+        # Spell out the can_recruit verdict, since a "no" here is the usual reason a manual
+        # recruitment test looks like it silently did nothing.
+        if recruited:
+            report += f"➡️ ❌ {'ya está en el grupo' if es else 'already in the party'}\n\n"
+        elif not recruitable:
+            report += f"➡️ ❌ {'no es reclutable' if es else 'not recruitable'}\n\n"
+        elif world.can_recruit(character.name, threshold):
+            if es:
+                reason = 'desafío resuelto' if puzzle_state == 'solved' else 'sentimiento suficiente'
+                report += f"➡️ ✅ SE PUEDE RECLUTAR ({reason})\n\n"
+            else:
+                reason = 'challenge solved' if puzzle_state == 'solved' else 'feeling is high enough'
+                report += f"➡️ ✅ CAN BE RECRUITED ({reason})\n\n"
+        else:
+            report += (f"➡️ ❌ {'necesita' if es else 'needs'} `{_enum_value(threshold)}` "
+                       f"{'o resolver su desafío' if es else 'feeling, or a solved challenge'}\n\n")
+
+    return report
+
+
+def generate_puzzle_debug_report(world: World, language: str = 'es') -> str:
+    """Debug view of every puzzle: its state, all three verification routes, and which of its
+    solution conditions currently hold in the world."""
+    es = language == 'es'
+    report = "🧩 **PUZZLES** 🧩\n\n"
+
+    if not world.puzzles:
+        report += "_Sin puzzles._\n" if es else "_No puzzles._\n"
+        return report
+
+    for puzzle_name, puzzle in world.puzzles.items():
+        state = world.puzzle_states.get(puzzle_name, 'unknown')
+        report += f"### {PUZZLE_STATE_ICONS.get(state, '❔')} {puzzle_name} — `{state}`\n"
+        report += f"📝 {puzzle.problem}\n"
+        report += f"🔑 {'Respuesta' if es else 'Answer'}: `{puzzle.answer}`\n"
+
+        accepted = getattr(puzzle, 'accepted_answers', None) or []
+        report += (f"🗣️ {'También se acepta' if es else 'Also accepted'}: "
+                   f"{', '.join(f'`{a}`' for a in accepted) if accepted else '—'}\n")
+
+        conditions = getattr(puzzle, 'solution_conditions', None) or []
+        if conditions:
+            report += (f"⚙️ {'Condiciones' if es else 'Conditions'} "
+                       f"({'todas deben cumplirse' if es else 'all must hold'}):\n")
+            for condition in conditions:
+                held = world._condition_satisfied(condition)
+                target = (getattr(condition, 'item_name', None) or
+                          getattr(condition, 'character_name', None) or
+                          getattr(condition, 'location_name', None) or '—')
+                condition_type = _enum_value(getattr(condition, 'condition_type', '?'))
+                report += f"  - {'✅' if held else '⬜'} `{condition_type}` → {target}\n"
+        else:
+            report += (f"⚙️ {'Sin condiciones verificables' if es else 'No engine-checkable conditions'}"
+                       f" — {'solo texto o juicio del narrador' if es else 'text or narrator judgement only'}\n")
+
+        if puzzle.proposed_by_character:
+            report += f"👤 {'Propuesto por' if es else 'Proposed by'}: {puzzle.proposed_by_character}\n"
+        if getattr(puzzle, 'proposed_by_location', None):
+            report += f"🏠 {'Propuesto en' if es else 'Proposed at'}: {puzzle.proposed_by_location}\n"
+
+        rewards = getattr(puzzle, 'rewards', None) or []
+        if rewards:
+            rendered = []
+            for reward in rewards:
+                reward_type = world._normalized_reward_type(reward)
+                target = (getattr(reward, 'item_name', None) or
+                          getattr(reward, 'character_name', None) or
+                          getattr(reward, 'to_location', None) or '')
+                rendered.append(f"{reward_type}{f' ({target})' if target else ''}")
+            report += f"🎁 {'Recompensas' if es else 'Rewards'}: {', '.join(rendered)}\n"
+        report += "\n"
+
+    return report
 
 
 def generate_objective_validation_report(world: World, language: str = 'es') -> str:

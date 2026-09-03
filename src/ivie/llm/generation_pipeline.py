@@ -284,6 +284,9 @@ def create_world_incrementally(theme: str, language: str, progress_callback=None
         
         # Validate and fix puzzle rewards
         rewards_ok, world_with_puzzles = verify_puzzle_rewards_and_fix(world_with_puzzles)
+
+        # Ensure no puzzle is left solvable only by an exact match against its free-text answer
+        _, world_with_puzzles = verify_puzzle_verifiability_and_fix(world_with_puzzles)
         
         connectivity_ok = verify_location_connectivity(world_with_puzzles)
         objective_ok = verify_objective_completability(world_with_puzzles)
@@ -434,6 +437,9 @@ def create_world_incrementally_generate(language: str, progress_callback=None) -
         
         # Validate and fix puzzle rewards
         rewards_ok, final_world = verify_puzzle_rewards_and_fix(final_world)
+
+        # Ensure no puzzle is left solvable only by an exact match against its free-text answer
+        _, final_world = verify_puzzle_verifiability_and_fix(final_world)
         
         connectivity_ok = verify_location_connectivity(final_world)
         objective_ok = verify_objective_completability(final_world)
@@ -811,3 +817,66 @@ def verify_puzzle_rewards_and_fix(world: GeneratedWorld) -> tuple[bool, Generate
                     character.recruitable = True
 
     return all_ok, world
+
+
+def verify_puzzle_verifiability_and_fix(world: GeneratedWorld) -> tuple[bool, GeneratedWorld]:
+    """Guarantee every puzzle has at least one way the engine can confirm it was solved.
+
+    A puzzle carrying neither accepted_answers nor solution_conditions is only solvable by an
+    exact match against its free-text `answer`. That is fine for a riddle ('echo') and
+    impossible for an action ('Ring the Small Silver Bell.'), which is how puzzles used to end
+    up permanently unsolvable. Repairs are conservative and never fail generation: we widen
+    the accepted answers, and derive conditions from world objects the answer names.
+    """
+    from .structured_data_models import PuzzleConditionType, PuzzleSolutionCondition
+
+    item_names = {item.name for item in world.items}
+    character_names = {character.name for character in world.characters}
+    location_names = {location.name for location in world.locations}
+
+    for puzzle in world.puzzles:
+        if puzzle.solution_conditions:
+            continue
+
+        answer_lower = (puzzle.answer or "").lower()
+        derived = []
+
+        # An answer that names a world item is an action on that item ("ring the silver bell",
+        # "give her the ribbon"): holding it is the checkable trace that the action happened.
+        for item_name in sorted(item_names, key=len, reverse=True):
+            if item_name.lower() in answer_lower:
+                derived.append(PuzzleSolutionCondition(
+                    condition_type=PuzzleConditionType.HAS_ITEM,
+                    description=f"The player is carrying {item_name}.",
+                    item_name=item_name,
+                ))
+                break
+
+        # Whoever set the challenge has to be engaged with for it to count as attempted.
+        if puzzle.proposed_by_character and puzzle.proposed_by_character in character_names:
+            derived.append(PuzzleSolutionCondition(
+                condition_type=PuzzleConditionType.TALKED_TO_CHARACTER,
+                description=f"The player has interacted with {puzzle.proposed_by_character}.",
+                character_name=puzzle.proposed_by_character,
+            ))
+        elif puzzle.location and puzzle.location in location_names:
+            derived.append(PuzzleSolutionCondition(
+                condition_type=PuzzleConditionType.PLAYER_AT_LOCATION,
+                description=f"The player is at {puzzle.location}.",
+                location_name=puzzle.location,
+            ))
+
+        # Only a condition set that involves a concrete object is worth adding. A lone
+        # "talked to X" would auto-solve the puzzle the instant it was proposed.
+        if any(condition.condition_type == PuzzleConditionType.HAS_ITEM for condition in derived):
+            puzzle.solution_conditions = derived
+            print(f"[INFO] Derived {len(derived)} solution condition(s) for puzzle '{puzzle.name}'")
+        elif not puzzle.accepted_answers:
+            # Nothing mechanical to check: at least make the text path forgiving by accepting
+            # the answer stripped of its leading verb, so "Ring the bell" also accepts "the bell".
+            answer_words = (puzzle.answer or "").split()
+            if len(answer_words) > 1:
+                puzzle.accepted_answers = [" ".join(answer_words[1:])]
+                print(f"[INFO] Widened accepted answers for puzzle '{puzzle.name}' to {puzzle.accepted_answers}")
+
+    return True, world

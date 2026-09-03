@@ -3,7 +3,12 @@ import inspect
 
 import streamlit as st
 
-from src.ivie.core.game_logic import check_recruitment_request, create_game_loop
+from src.ivie.core.game_logic import (
+    check_character_puzzle_mention,
+    check_recruitment_offer_response,
+    check_recruitment_request,
+    create_game_loop,
+)
 from src.ivie.core.world import World, Character, Location, Puzzle
 from src.ivie.llm.structured_data_models import FeelingLevel, CharacterInteraction
 
@@ -214,11 +219,14 @@ def test_game_loop_recruitment_check_fires_before_puzzle_mention_and_puzzle_stil
     assert world.puzzle_states["Elder's Trust"] == 'proposed'
     assert npc.recruited is False
 
-    # Second mention of the same message: check_recruitment_request now falls through
-    # (puzzle already 'proposed', not 'solved' -> returns None per its own logic), and
-    # control reaches check_character_puzzle_mention, proving the puzzle interaction is
-    # not swallowed or blocked by the recruitment stage.
-    second_response = game_loop("I ask Elder to join my party", [])
-    assert second_response is not None
-    assert "Elder" in second_response
+    # Second mention of the same message: BOTH short-circuits must now decline it.
+    # check_recruitment_request falls through (puzzle already 'proposed', not 'solved'), and
+    # check_character_puzzle_mention also declines because the puzzle is no longer
+    # 'not_proposed'. Re-presenting an already-proposed puzzle is what used to trap the
+    # player: the challenge text was read back on every mention of the NPC and the turn was
+    # short-circuited before they could ever attempt it, so the puzzle stayed unsolved forever.
+    assert check_recruitment_request(world, "I ask Elder to join my party", "en",
+                                     config=_config_with_threshold()) is None
+    assert check_character_puzzle_mention(world, "I ask Elder to join my party", "en") is None
+    assert world.puzzle_states["Elder's Trust"] == 'proposed'
     assert npc.recruited is False

@@ -11,9 +11,11 @@ from openai import OpenAI
 
 load_dotenv()
 
-def get_llm(model_name: str = "gemini-2.5-flash") -> object:
+def get_llm(model_name: str = "gemini-3.5-flash") -> object:
 
-    google_models = ["gemini-1.0-pro", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    google_models = ["gemini-1.0-pro", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash",
+                     "gemini-3-flash-preview", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
+                     "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
     replicate_models = ["meta/meta-llama-3-70b", "meta/meta-llama-3-70b-instruct"]
     openai_models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
 
@@ -52,7 +54,7 @@ class ReplicateModel():
         return "".join(output)
 
 class GeminiModel():
-    def __init__ (self, model_name:str = "gemini-2.5-flash") -> None:
+    def __init__ (self, model_name:str = "gemini-3.5-flash") -> None:
         
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.client = genai.Client(api_key=self.api_key)

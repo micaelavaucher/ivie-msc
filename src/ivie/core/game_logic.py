@@ -10,7 +10,8 @@ import time
 import streamlit as st
 
 from ..llm.prompts import prompt_narrate_current_scene, prompt_world_update_structured, prompt_describe_objective
-from .world_builder import generate_world_overview, generate_objective_validation_report
+from .world_builder import (generate_world_overview, generate_objective_validation_report,
+                            generate_npc_debug_report, generate_puzzle_debug_report)
 from .world_utils import create_world_state_summary
 from ..llm.structured_data_models import WorldUpdate
 from ..llm.memory_system import create_memory_system
@@ -256,7 +257,11 @@ def check_character_puzzle_mention(world, message, language):
                     return None
 
                 puzzle_name = character.interaction.proposes_puzzle
-                if puzzle_name in world.puzzle_states and world.puzzle_states[puzzle_name] == 'solved':
+                # Only present a puzzle that has never been proposed. Without this the check
+                # re-fires on every later mention of the character and short-circuits the turn
+                # before the player can ever act on the challenge - the puzzle would be
+                # re-read back at them forever while its state never advanced past unsolved.
+                if world.puzzle_states.get(puzzle_name) != 'not_proposed':
                     return None
 
                 hint_keywords = ['hint', 'pista', 'help', 'ayuda', 'clue', 'stuck', 'atascado']
@@ -291,8 +296,60 @@ def check_character_puzzle_mention(world, message, language):
                             response += f"💡 **Hints available:** {len(puzzle.puzzle_hints)} hints"
                         response += f"\n\n⚠️ *You must solve this puzzle before {character.name} can help you.*"
 
+                    world.puzzle_states[puzzle_name] = 'proposed'
+                    world.record_interaction(character.name)
                     print(f"🧩 Character puzzle proposition triggered: {character.name} -> {puzzle.name}")
                     return response
+    return None
+
+
+def format_recruitment_offer(character_name, language):
+    """The party invitation appended to a turn once an NPC's challenge has been verified."""
+    if language == 'es':
+        return (f"\n\n🤝 **{character_name}** te pregunta: \"¿Te gustaría que me una a tu grupo?\"\n"
+                f"*(Responde **sí** o **no**.)*")
+    return (f"\n\n🤝 **{character_name}** asks you: \"Would you like me to join your party?\"\n"
+            f"*(Answer **yes** or **no**.)*")
+
+
+def check_recruitment_offer_response(world, message, language):
+    """Resolve a pending party invitation from the player's yes/no reply.
+
+    Returns None when there is no offer outstanding, or when the reply is neither a yes nor a
+    no - in that case the turn proceeds normally and the offer simply stays open, so an
+    unrelated action doesn't silently count as a refusal.
+    """
+    pending_character = getattr(world, 'pending_recruitment_offer', None)
+    if not pending_character or not message:
+        return None
+
+    message_lower = message.lower()
+    yes_keywords = ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'of course', 'please do', 'join',
+                    'si', 'sí', 'claro', 'dale', 'por supuesto', 'acepto', 'únete', 'unete']
+    no_keywords = ['no', 'nope', 'not now', 'later', 'decline', 'refuse',
+                   'ahora no', 'más tarde', 'mas tarde', 'rechazo', 'rechazar']
+
+    # Longest-match wins so "not now" isn't read as the bare "no" inside it, and a reply of
+    # "no thanks" isn't read as a yes because it happens to contain "ok" in "okay".
+    matched_yes = max((k for k in yes_keywords if re.search(rf'\b{re.escape(k)}\b', message_lower)), key=len, default=None)
+    matched_no = max((k for k in no_keywords if re.search(rf'\b{re.escape(k)}\b', message_lower)), key=len, default=None)
+
+    if matched_no and (not matched_yes or len(matched_no) >= len(matched_yes)):
+        character = world.decline_pending_recruitment()
+        name = character.name if character else pending_character
+        print(f"🤝 Player declined to recruit {name}")
+        if language == 'es':
+            return f"🤝 **{name}** asiente y se queda donde está. Puedes volver a pedírselo más adelante."
+        return f"🤝 **{name}** nods and stays behind. You can ask them again later."
+
+    if matched_yes:
+        character = world.accept_pending_recruitment()
+        name = character.name if character else pending_character
+        print(f"🤝 Player recruited {name}")
+        if language == 'es':
+            return f"🤝 **{name}** se une a tu grupo."
+        return f"🤝 **{name}** joins your party."
+
     return None
 
 def check_recruitment_request(world, message, language, config=None):
@@ -362,6 +419,16 @@ def handle_debug_command(message, world, language):
         validation = generate_objective_validation_report(world, language)
         debug_info = overview + "\n\n" + validation
         return debug_info.replace("<", r"\<").replace(">", r"\>")
+
+    if message_lower in ["npc list", "npcs", "list npcs", "characters", "party",
+                         "lista npcs", "personajes", "grupo"]:
+        npc_report = generate_npc_debug_report(world, language)
+        return npc_report.replace("<", r"\<").replace(">", r"\>")
+
+    if message_lower in ["puzzle list", "puzzles", "list puzzles",
+                         "lista puzzles", "acertijos", "rompecabezas"]:
+        puzzle_report = generate_puzzle_debug_report(world, language)
+        return puzzle_report.replace("<", r"\<").replace(">", r"\>")
 
     if message_lower in ["see world", "ver mundo", "world overview", "resumen mundo", "overview"]:
         world_overview = generate_world_overview(world, language)
@@ -579,6 +646,13 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
         if debug_response:
             return debug_response
 
+        # An outstanding party invitation is answered before anything else: the player's "yes"
+        # or "no" is a reply to the NPC, not a world action, and must not be routed to the
+        # narrator or read as a mention of some other character.
+        offer_response = check_recruitment_offer_response(world, message, language)
+        if offer_response:
+            return offer_response
+
         # check_recruitment_request must run before check_character_puzzle_mention:
         # generation prompts steer a recruitable NPC's interaction.proposes_puzzle to
         # point at that NPC's own recruitment_puzzle, so if the puzzle-mention check ran
@@ -599,6 +673,10 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
 
         visited_locations.add(world.player.location.name)
 
+        # Remember any offer that was already outstanding, so the invitation below is asked
+        # once when it is earned rather than repeated on every subsequent turn.
+        offer_before_turn = getattr(world, 'pending_recruitment_offer', None)
+
         response_update = process_player_input_structured(
             world, message, language, reasoning_model,
             number_of_turns, game_log_dictionary, memory_system,
@@ -606,6 +684,12 @@ def create_game_loop(world, reasoning_model, narrative_model, language, visited_
 
         answer, last_player_position = generate_narration(world, last_player_position, response_update, language, narrative_model)
         answer = check_objective_completion(world, answer, language)
+
+        # Solving a character's challenge this turn queues their party invitation; surface it
+        # here so the player sees the question in the same turn they earned it.
+        pending_offer = getattr(world, 'pending_recruitment_offer', None)
+        if pending_offer and pending_offer != offer_before_turn:
+            answer += format_recruitment_offer(pending_offer, language)
 
         world_state_formatted = world.format_world_state_for_chat(language=language)
         answer += f"\n\n---\n{world_state_formatted}"
